@@ -8,6 +8,7 @@ use jxl_transform::{
     dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, merge_dc_ac,
     BLOCK_SIZE,
 };
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
@@ -114,25 +115,30 @@ impl JxlDecoder {
         // Step 1: Decode quantized coefficients
         let quantized = self.decode_coefficients(reader, width, height)?;
 
-        // Step 2: Dequantize with XYB-tuned tables
+        // Step 2: Dequantize with XYB-tuned tables (parallel)
         // Use per-channel dequantization matching encoder
         let xyb_tables = generate_xyb_quant_tables(consts::DEFAULT_QUALITY);
-        let mut dct_coeffs = vec![vec![0.0; width * height]; 3];
+        let quant_tables = [&xyb_tables.x_table, &xyb_tables.y_table, &xyb_tables.b_table];
 
-        // X channel (index 0)
-        self.dequantize_channel(&quantized[0], &xyb_tables.x_table, width, height, &mut dct_coeffs[0]);
+        let dct_coeffs: Vec<Vec<f32>> = quantized
+            .par_iter()
+            .zip(quant_tables.par_iter())
+            .map(|(quantized_channel, quant_table)| {
+                let mut dct_coeff = vec![0.0; width * height];
+                self.dequantize_channel(quantized_channel, quant_table, width, height, &mut dct_coeff);
+                dct_coeff
+            })
+            .collect();
 
-        // Y channel (index 1)
-        self.dequantize_channel(&quantized[1], &xyb_tables.y_table, width, height, &mut dct_coeffs[1]);
-
-        // B-Y channel (index 2)
-        self.dequantize_channel(&quantized[2], &xyb_tables.b_table, width, height, &mut dct_coeffs[2]);
-
-        // Step 3: Apply inverse DCT
-        let mut xyb = vec![vec![0.0; width * height]; 3];
-        for c in 0..3 {
-            idct_channel(&dct_coeffs[c], width, height, &mut xyb[c]);
-        }
+        // Step 3: Apply inverse DCT (parallel)
+        let xyb: Vec<Vec<f32>> = dct_coeffs
+            .par_iter()
+            .map(|dct_coeff| {
+                let mut xyb_channel = vec![0.0; width * height];
+                idct_channel(dct_coeff, width, height, &mut xyb_channel);
+                xyb_channel
+            })
+            .collect();
 
         // Step 4: Convert XYB to RGB
         let mut linear_rgb = vec![0.0; width * height * 3];

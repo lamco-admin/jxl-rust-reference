@@ -7,6 +7,7 @@ use jxl_headers::Container;
 use jxl_transform::{
     dct_channel, generate_xyb_quant_tables, quantize_channel, separate_dc_ac, zigzag_scan_channel,
 };
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Write};
 use std::path::Path;
@@ -173,44 +174,32 @@ impl JxlEncoder {
         let mut xyb = vec![0.0; width * height * 3];
         self.rgb_to_xyb_image(&linear_rgb, &mut xyb, width, height);
 
-        // Step 3: Apply DCT transformation to each channel
-        let mut dct_coeffs = vec![vec![0.0; width * height]; 3];
-        for (c, dct_coeff) in dct_coeffs.iter_mut().enumerate().take(3) {
-            let channel = self.extract_channel(&xyb, width, height, c, 3);
-            dct_channel(&channel, width, height, dct_coeff);
-        }
+        // Step 3: Apply DCT transformation to each channel (parallel)
+        // Process X, Y, and B-Y channels independently for maximum throughput
+        let dct_coeffs: Vec<Vec<f32>> = (0..3)
+            .into_par_iter()
+            .map(|c| {
+                let channel = self.extract_channel(&xyb, width, height, c, 3);
+                let mut dct_coeff = vec![0.0; width * height];
+                dct_channel(&channel, width, height, &mut dct_coeff);
+                dct_coeff
+            })
+            .collect();
 
-        // Step 4: Quantize coefficients with XYB-tuned tables
+        // Step 4: Quantize coefficients with XYB-tuned tables (parallel)
         // Use per-channel quantization for optimal perceptual quality
         let xyb_tables = generate_xyb_quant_tables(self.options.quality);
-        let mut quantized = vec![Vec::new(); 3];
+        let quant_tables = [&xyb_tables.x_table, &xyb_tables.y_table, &xyb_tables.b_table];
 
-        // X channel (index 0)
-        quantize_channel(
-            &dct_coeffs[0],
-            width,
-            height,
-            &xyb_tables.x_table,
-            &mut quantized[0],
-        );
-
-        // Y channel (index 1)
-        quantize_channel(
-            &dct_coeffs[1],
-            width,
-            height,
-            &xyb_tables.y_table,
-            &mut quantized[1],
-        );
-
-        // B-Y channel (index 2)
-        quantize_channel(
-            &dct_coeffs[2],
-            width,
-            height,
-            &xyb_tables.b_table,
-            &mut quantized[2],
-        );
+        let quantized: Vec<Vec<i16>> = dct_coeffs
+            .par_iter()
+            .zip(quant_tables.par_iter())
+            .map(|(dct_coeff, quant_table)| {
+                let mut quantized_channel = Vec::new();
+                quantize_channel(dct_coeff, width, height, quant_table, &mut quantized_channel);
+                quantized_channel
+            })
+            .collect();
 
         // Step 5: Encode quantized coefficients using simplified ANS
         self.encode_coefficients(&quantized, width, height, writer)?;
