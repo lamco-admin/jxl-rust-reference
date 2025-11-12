@@ -1,9 +1,7 @@
 //! JPEG XL encoder implementation
 
-use jxl_bitstream::{AnsEncoder, BitWriter};
-use jxl_color::*;
+use jxl_bitstream::BitWriter;
 use jxl_core::*;
-use jxl_transform::*;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -55,6 +53,10 @@ impl EncoderOptions {
 
 /// JPEG XL encoder
 pub struct JxlEncoder {
+    /// Encoder configuration options
+    /// Note: In this reference implementation, options are stored but not fully utilized yet.
+    /// A complete implementation would use these for quality/effort trade-offs.
+    #[allow(dead_code)]
     options: EncoderOptions,
 }
 

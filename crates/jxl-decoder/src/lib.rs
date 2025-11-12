@@ -1,10 +1,8 @@
 //! JPEG XL decoder implementation
 
-use jxl_bitstream::{AnsDecoder, BitReader};
-use jxl_color::*;
+use jxl_bitstream::BitReader;
 use jxl_core::*;
 use jxl_headers::JxlHeader;
-use jxl_transform::*;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -88,6 +86,8 @@ impl JxlDecoder {
         let pixel_count = header.dimensions.pixel_count();
         let channel_count = header.num_channels;
 
+        // Note: Using explicit indexing for clarity in this reference implementation
+        #[allow(clippy::needless_range_loop)]
         match &mut image.buffer {
             ImageBuffer::U8(ref mut buffer) => {
                 for i in 0..(pixel_count * channel_count) {

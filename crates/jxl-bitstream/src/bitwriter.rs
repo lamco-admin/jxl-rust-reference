@@ -103,12 +103,14 @@ mod tests {
     #[test]
     fn test_write_bits() {
         let mut output = Vec::new();
-        let mut writer = BitWriter::new(Cursor::new(&mut output));
+        {
+            let mut writer = BitWriter::new(Cursor::new(&mut output));
 
-        writer.write_bits(0b1010, 4).unwrap();
-        writer.write_bits(0b1010, 4).unwrap();
-        writer.write_bits(0b11001100, 8).unwrap();
-        writer.flush().unwrap();
+            writer.write_bits(0b1010, 4).unwrap();
+            writer.write_bits(0b1010, 4).unwrap();
+            writer.write_bits(0b11001100, 8).unwrap();
+            writer.flush().unwrap();
+        } // writer dropped here, releasing mutable borrow
 
         assert_eq!(output, vec![0b10101010, 0b11001100]);
     }
@@ -116,17 +118,19 @@ mod tests {
     #[test]
     fn test_write_bit() {
         let mut output = Vec::new();
-        let mut writer = BitWriter::new(Cursor::new(&mut output));
+        {
+            let mut writer = BitWriter::new(Cursor::new(&mut output));
 
-        writer.write_bit(false).unwrap();
-        writer.write_bit(true).unwrap();
-        writer.write_bit(false).unwrap();
-        writer.write_bit(true).unwrap();
-        writer.write_bit(false).unwrap();
-        writer.write_bit(true).unwrap();
-        writer.write_bit(false).unwrap();
-        writer.write_bit(true).unwrap();
-        writer.flush().unwrap();
+            writer.write_bit(false).unwrap();
+            writer.write_bit(true).unwrap();
+            writer.write_bit(false).unwrap();
+            writer.write_bit(true).unwrap();
+            writer.write_bit(false).unwrap();
+            writer.write_bit(true).unwrap();
+            writer.write_bit(false).unwrap();
+            writer.write_bit(true).unwrap();
+            writer.flush().unwrap();
+        } // writer dropped here, releasing mutable borrow
 
         assert_eq!(output, vec![0b10101010]);
     }

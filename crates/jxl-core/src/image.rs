@@ -1,6 +1,6 @@
 //! Image data structures
 
-use crate::{ColorChannels, ColorEncoding, Dimensions, JxlError, JxlResult, PixelType, Sample};
+use crate::{ColorChannels, ColorEncoding, Dimensions, JxlError, JxlResult, PixelType};
 
 /// Image buffer that can hold different pixel types
 #[derive(Debug, Clone)]

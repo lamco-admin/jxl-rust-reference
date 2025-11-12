@@ -51,17 +51,44 @@ JPEG XL (ISO/IEC 18181) consists of:
 - **Part 3**: Decoder conformance requirements
 - **Part 4**: Reference software (libjxl)
 
-## Building
+## ⚠️ Important: Read This First
+
+**This is an EDUCATIONAL reference implementation.** It demonstrates JPEG XL architecture in Rust but does NOT produce or decode compliant JPEG XL files.
+
+📖 **Read [LIMITATIONS.md](LIMITATIONS.md) for full details on what is and isn't implemented.**
+
+For production use:
+- **C++ Implementation:** [libjxl](https://github.com/libjxl/libjxl) (official reference)
+- **Rust Decoder:** [jxl-oxide](https://github.com/tirr-c/jxl-oxide) (production-ready)
+
+## Quick Start
+
+### Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/lamco-admin/jxl-rust-reference.git
+cd jxl-rust-reference
+
+# Build the project
 cargo build --release
-```
 
-## Testing
-
-```bash
+# Run tests
 cargo test --all
+
+# Run the example
+cargo run --example encode_decode
 ```
+
+For detailed build instructions, see [BUILD-AND-TEST.md](BUILD-AND-TEST.md).
+
+## Documentation
+
+- **[LIMITATIONS.md](LIMITATIONS.md)** - ⚠️ **Read this first!** Explains scope and what's implemented
+- **[IMPLEMENTATION.md](IMPLEMENTATION.md)** - Technical architecture and algorithm details
+- **[BUILD-AND-TEST.md](BUILD-AND-TEST.md)** - Comprehensive build and testing guide
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - How to contribute
+- **[EVALUATION.md](EVALUATION.md)** - Critical evaluation of implementation
 
 ## Usage
 

@@ -15,14 +15,9 @@ pub fn generate_quant_table(quality: f32) -> QuantTable {
 
     // Base quantization matrix (similar to JPEG)
     const BASE_QUANT: [u16; 64] = [
-        16, 11, 10, 16, 24, 40, 51, 61,
-        12, 12, 14, 19, 26, 58, 60, 55,
-        14, 13, 16, 24, 40, 57, 69, 56,
-        14, 17, 22, 29, 51, 87, 80, 62,
-        18, 22, 37, 56, 68, 109, 103, 77,
-        24, 35, 55, 64, 81, 104, 113, 92,
-        49, 64, 78, 87, 103, 121, 120, 101,
-        72, 92, 95, 98, 112, 100, 103, 99,
+        16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69,
+        56, 14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81,
+        104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99,
     ];
 
     let mut table = [0u16; 64];
@@ -69,8 +64,7 @@ pub fn quantize_channel(
             // Extract block
             for y in 0..BLOCK_SIZE.min(height - block_y) {
                 for x in 0..BLOCK_SIZE.min(width - block_x) {
-                    block[y * BLOCK_SIZE + x] =
-                        dct_coeffs[(block_y + y) * width + (block_x + x)];
+                    block[y * BLOCK_SIZE + x] = dct_coeffs[(block_y + y) * width + (block_x + x)];
                 }
             }
 
@@ -80,8 +74,7 @@ pub fn quantize_channel(
             // Store
             for y in 0..BLOCK_SIZE.min(height - block_y) {
                 for x in 0..BLOCK_SIZE.min(width - block_x) {
-                    output[(block_y + y) * width + (block_x + x)] =
-                        quant_block[y * BLOCK_SIZE + x];
+                    output[(block_y + y) * width + (block_x + x)] = quant_block[y * BLOCK_SIZE + x];
                 }
             }
         }

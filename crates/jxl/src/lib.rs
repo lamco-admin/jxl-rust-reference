@@ -51,8 +51,8 @@
 
 // Re-export core types
 pub use jxl_core::{
-    ColorChannels, ColorEncoding, Dimensions, Image, ImageBuffer, JxlError, JxlResult,
-    Orientation, PixelType, Sample,
+    ColorChannels, ColorEncoding, Dimensions, Image, ImageBuffer, JxlError, JxlResult, Orientation,
+    PixelType, Sample,
 };
 
 // Re-export decoder
@@ -72,6 +72,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::const_is_empty)] // VERSION comes from CARGO_PKG_VERSION and is always non-empty
     fn test_version() {
         assert!(!VERSION.is_empty());
     }
@@ -79,12 +80,7 @@ mod tests {
     #[test]
     fn test_image_creation() {
         let dims = Dimensions::new(100, 100);
-        let image = Image::new(
-            dims,
-            ColorChannels::RGB,
-            PixelType::U8,
-            ColorEncoding::SRGB,
-        );
+        let image = Image::new(dims, ColorChannels::RGB, PixelType::U8, ColorEncoding::SRGB);
         assert!(image.is_ok());
         let img = image.unwrap();
         assert_eq!(img.width(), 100);

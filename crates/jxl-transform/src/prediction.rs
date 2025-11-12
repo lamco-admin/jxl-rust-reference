@@ -54,12 +54,8 @@ pub fn apply_prediction(
                     let top = if y > 0 { input[idx - width] } else { 0.0 };
                     (left + top) / 2.0
                 }
-                PredictionMode::Paeth => {
-                    paeth_predictor(input, x, y, width)
-                }
-                PredictionMode::Gradient => {
-                    gradient_predictor(input, x, y, width)
-                }
+                PredictionMode::Paeth => paeth_predictor(input, x, y, width),
+                PredictionMode::Gradient => gradient_predictor(input, x, y, width),
             };
 
             output[idx] = pixel - prediction;
@@ -104,12 +100,8 @@ pub fn reverse_prediction(
                     let top = if y > 0 { output[idx - width] } else { 0.0 };
                     (left + top) / 2.0
                 }
-                PredictionMode::Paeth => {
-                    paeth_predictor(output, x, y, width)
-                }
-                PredictionMode::Gradient => {
-                    gradient_predictor(output, x, y, width)
-                }
+                PredictionMode::Paeth => paeth_predictor(output, x, y, width),
+                PredictionMode::Gradient => gradient_predictor(output, x, y, width),
             };
 
             output[idx] = residual + prediction;
@@ -123,7 +115,11 @@ fn paeth_predictor(data: &[f32], x: usize, y: usize, width: usize) -> f32 {
     }
 
     let left = if x > 0 { data[y * width + x - 1] } else { 0.0 };
-    let top = if y > 0 { data[(y - 1) * width + x] } else { 0.0 };
+    let top = if y > 0 {
+        data[(y - 1) * width + x]
+    } else {
+        0.0
+    };
     let top_left = if x > 0 && y > 0 {
         data[(y - 1) * width + x - 1]
     } else {
@@ -150,7 +146,11 @@ fn gradient_predictor(data: &[f32], x: usize, y: usize, width: usize) -> f32 {
     }
 
     let left = if x > 0 { data[y * width + x - 1] } else { 0.0 };
-    let top = if y > 0 { data[(y - 1) * width + x] } else { 0.0 };
+    let top = if y > 0 {
+        data[(y - 1) * width + x]
+    } else {
+        0.0
+    };
     let top_left = if x > 0 && y > 0 {
         data[(y - 1) * width + x - 1]
     } else {

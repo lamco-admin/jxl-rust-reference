@@ -1,6 +1,6 @@
 //! Core types for JPEG XL
 
-use num_traits::{Float, NumCast};
+use num_traits::NumCast;
 
 /// Pixel data type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

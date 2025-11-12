@@ -5,10 +5,10 @@
 //! - sRGB <-> Linear RGB
 //! - Color correlation transforms
 
-pub mod xyb;
-pub mod srgb;
 pub mod correlation;
+pub mod srgb;
+pub mod xyb;
 
-pub use xyb::*;
-pub use srgb::*;
 pub use correlation::*;
+pub use srgb::*;
+pub use xyb::*;

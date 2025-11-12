@@ -1,7 +1,5 @@
 //! sRGB color space transformations
 
-use num_traits::Float;
-
 /// Convert sRGB to linear RGB (gamma expansion)
 pub fn srgb_to_linear(srgb: f32) -> f32 {
     if srgb <= 0.04045 {
