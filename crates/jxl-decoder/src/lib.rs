@@ -4,7 +4,7 @@ use jxl_bitstream::BitReader;
 use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
 use jxl_core::*;
 use jxl_headers::JxlHeader;
-use jxl_transform::{dequantize, generate_quant_table, idct_channel, inv_zigzag_scan_channel, BLOCK_SIZE};
+use jxl_transform::{dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, BLOCK_SIZE};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -96,12 +96,19 @@ impl JxlDecoder {
         // Step 1: Decode quantized coefficients
         let quantized = self.decode_coefficients(reader, width, height)?;
 
-        // Step 2: Dequantize
-        let quant_table = generate_quant_table(consts::DEFAULT_QUALITY);
+        // Step 2: Dequantize with XYB-tuned tables
+        // Use per-channel dequantization matching encoder
+        let xyb_tables = generate_xyb_quant_tables(consts::DEFAULT_QUALITY);
         let mut dct_coeffs = vec![vec![0.0; width * height]; 3];
-        for (c, dct_coeff) in dct_coeffs.iter_mut().enumerate().take(3) {
-            self.dequantize_channel(&quantized[c], &quant_table, width, height, dct_coeff);
-        }
+
+        // X channel (index 0)
+        self.dequantize_channel(&quantized[0], &xyb_tables.x_table, width, height, &mut dct_coeffs[0]);
+
+        // Y channel (index 1)
+        self.dequantize_channel(&quantized[1], &xyb_tables.y_table, width, height, &mut dct_coeffs[1]);
+
+        // B-Y channel (index 2)
+        self.dequantize_channel(&quantized[2], &xyb_tables.b_table, width, height, &mut dct_coeffs[2]);
 
         // Step 3: Apply inverse DCT
         let mut xyb = vec![vec![0.0; width * height]; 3];
