@@ -1,0 +1,12 @@
+[package]
+name = "jxl-bitstream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jxl-core = { path = "../jxl-core" }
+bitvec.workspace = true
+byteorder.workspace = true
+thiserror.workspace = true

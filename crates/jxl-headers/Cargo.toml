@@ -1,0 +1,10 @@
+[package]
+name = "jxl-headers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jxl-core = { path = "../jxl-core" }
+jxl-bitstream = { path = "../jxl-bitstream" }

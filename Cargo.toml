@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/jxl-core",
+    "crates/jxl-bitstream",
+    "crates/jxl-color",
+    "crates/jxl-transform",
+    "crates/jxl-headers",
+    "crates/jxl-decoder",
+    "crates/jxl-encoder",
+    "crates/jxl",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+repository = "https://github.com/lamco-admin/jxl-rust-reference"
+homepage = "https://www.lamco.ai/"
+authors = ["Greg Lamberson <greg@lamco.io>"]
+
+[workspace.dependencies]
+# Core dependencies
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Bitstream and compression
+bitvec = "1.0"
+byteorder = "1.5"
+
+# Math and numerics
+num-traits = "0.2"
+num-integer = "0.1"
+
+# Image processing
+image = "0.25"
+
+# Parallelism
+rayon = "1.10"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

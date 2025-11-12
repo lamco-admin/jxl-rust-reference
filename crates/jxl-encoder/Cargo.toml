@@ -1,0 +1,13 @@
+[package]
+name = "jxl-encoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jxl-core = { path = "../jxl-core" }
+jxl-bitstream = { path = "../jxl-bitstream" }
+jxl-color = { path = "../jxl-color" }
+jxl-transform = { path = "../jxl-transform" }
+rayon.workspace = true
