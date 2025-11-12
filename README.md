@@ -1,5 +1,9 @@
 # JPEG XL Rust Reference Implementation
 
+[![Rust CI](https://github.com/lamco-admin/jxl-rust-reference/workflows/Rust%20CI/badge.svg)](https://github.com/lamco-admin/jxl-rust-reference/actions)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+
 A complete reference implementation of JPEG XL (ISO/IEC 18181) in Rust, based on the libjxl C++ reference implementation.
 
 **Developed by:** Greg Lamberson, [Lamco Development](https://www.lamco.ai/)
@@ -76,8 +80,13 @@ cargo build --release
 # Run tests
 cargo test --all
 
-# Run the example
-cargo run --example encode_decode
+# Run examples
+cargo run --example encode_decode       # Basic encoding/decoding
+cargo run --example pixel_formats       # Different pixel formats
+cargo run --example error_handling      # Error handling patterns
+
+# Run benchmarks
+cargo bench
 ```
 
 For detailed build instructions, see [BUILD-AND-TEST.md](BUILD-AND-TEST.md).
