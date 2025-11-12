@@ -5,22 +5,23 @@
 
 ## ⚠️ Important: Scope of This Implementation
 
-This is an **educational reference implementation** designed to demonstrate the architecture and structure of JPEG XL in idiomatic Rust. It is **NOT a production-ready encoder/decoder** and does **NOT produce or decode compliant JPEG XL files**.
+This is an **educational reference implementation** designed to demonstrate the architecture and structure of JPEG XL in idiomatic Rust. It is **NOT a production-ready encoder/decoder** but DOES implement a functional (though simplified) codec that can encode and decode images with DCT transforms, quantization, and basic entropy coding.
 
 ### Purpose
 
 ✅ **This implementation is intended for:**
 - Understanding JPEG XL architecture and component interaction
 - Learning how image codecs are structured
-- Serving as a starting point for a complete implementation
+- Demonstrating functional lossy compression with DCT and quantization
 - Educational purposes and algorithm study
 - Demonstrating Rust patterns for image processing
+- Basic functional encoding/decoding with round-trip capability
 
 ❌ **This implementation is NOT intended for:**
 - Production use
-- Actual JPEG XL file encoding/decoding
-- Performance benchmarking
-- Compliance testing
+- Full JPEG XL spec compliance
+- Performance benchmarking against production codecs
+- Processing real-world JPEG XL files from other encoders
 
 ## What IS Implemented
 
@@ -41,15 +42,18 @@ This is an **educational reference implementation** designed to demonstrate the 
 - ⚠️ Simplified ANS table initialization (not spec-compliant)
 
 **jxl-color** (Functional)
-- ✅ XYB color space conversion formulas
+- ✅ Simplified XYB-like color space conversion (cube root gamma)
 - ✅ sRGB ↔ Linear RGB transformations
 - ✅ Color correlation transforms (YCoCg structure)
-- ✅ Perceptual color space mathematics
+- ⚠️ Simplified opsin absorbance (identity matrix for invertibility)
 
 **jxl-transform** (Functional)
 - ✅ 8x8 DCT (Discrete Cosine Transform) implementation
+- ✅ Inverse DCT (IDCT) for decoding
 - ✅ Prediction modes (Left, Top, Average, Paeth, Gradient)
 - ✅ Quantization framework with quality parameters
+- ✅ Dequantization for decoding
+- ✅ Group processing structures (DC/AC groups)
 - ✅ Transform pipeline structure
 
 **jxl-headers** (Basic)
@@ -59,55 +63,55 @@ This is an **educational reference implementation** designed to demonstrate the 
 
 ## What IS NOT Implemented
 
-### ❌ Critical Missing Components
+### ✅ Working Components (Simplified Implementation)
 
-**Encoder (jxl-encoder)** - **SIMPLIFIED PLACEHOLDER**
+**Encoder (jxl-encoder)** - **FUNCTIONAL**
 
-The encoder currently:
-- ❌ Does NOT perform RGB → XYB color space conversion
-- ❌ Does NOT apply DCT transformation
-- ❌ Does NOT quantize coefficients
-- ❌ Does NOT use ANS entropy coding
-- ❌ Does NOT create DC/AC groups
-- ❌ Does NOT produce compliant JPEG XL bitstreams
+The encoder implements:
+- ✅ RGB → XYB color space conversion (simplified)
+- ✅ sRGB → Linear RGB conversion
+- ✅ DCT transformation (8×8 blocks)
+- ✅ Quantization with quality parameter
+- ✅ Simplified entropy coding (variable-length coding)
+- ✅ Group processing structure
+- ⚠️ Does NOT use full ANS entropy coding
+- ⚠️ Does NOT produce spec-compliant JPEG XL files
+- ⚠️ Simplified for educational clarity over compression efficiency
 
-**What it actually does:**
+**What it does:**
 ```rust
-// Current implementation (lines 141-157 in jxl-encoder/src/lib.rs)
-// Writes RAW pixel data bit-by-bit - NOT a valid JPEG XL file!
-match &image.buffer {
-    ImageBuffer::U8(buffer) => {
-        for &pixel in buffer.iter() {
-            writer.write_bits(pixel as u64, 8)?; // Raw pixel output
-        }
-    }
-    // ... similar for U16, F32
-}
+// Full encoding pipeline (jxl-encoder/src/lib.rs)
+1. Convert input to linear f32
+2. Apply sRGB→Linear conversion
+3. Transform RGB→XYB color space
+4. Apply DCT to 8×8 blocks
+5. Quantize coefficients based on quality
+6. Encode with variable-length coding
 ```
 
-**Decoder (jxl-decoder)** - **SIMPLIFIED PLACEHOLDER**
+**Decoder (jxl-decoder)** - **FUNCTIONAL**
 
-The decoder currently:
-- ❌ Does NOT parse actual JPEG XL bitstreams
-- ❌ Does NOT perform ANS entropy decoding
-- ❌ Does NOT process DC/AC groups
-- ❌ Does NOT apply inverse DCT
-- ❌ Does NOT perform XYB → RGB conversion
-- ❌ Does NOT dequantize coefficients
-- ❌ Cannot decode real JPEG XL files
+The decoder implements:
+- ✅ Bitstream parsing (simplified headers)
+- ✅ Simplified entropy decoding (variable-length coding)
+- ✅ Dequantization
+- ✅ Inverse DCT (IDCT)
+- ✅ XYB → RGB conversion
+- ✅ Linear → sRGB conversion
+- ⚠️ Does NOT use full ANS entropy decoding
+- ⚠️ Cannot decode spec-compliant JPEG XL files from other encoders
+- ⚠️ Only works with files produced by this encoder
 
-**What it actually does:**
+**What it does:**
 ```rust
-// Current implementation (lines 92-108 in jxl-decoder/src/lib.rs)
-// Reads RAW pixel data bit-by-bit - NOT reading JPEG XL format!
-match &mut image.buffer {
-    ImageBuffer::U8(ref mut buffer) => {
-        for i in 0..(pixel_count * channel_count) {
-            buffer[i] = reader.read_bits(8)? as u8; // Raw pixel reading
-        }
-    }
-    // ... similar for U16, F32
-}
+// Full decoding pipeline (jxl-decoder/src/lib.rs)
+1. Parse simplified header
+2. Decode quantized coefficients
+3. Dequantize with same quality table
+4. Apply inverse DCT to reconstruct spatial domain
+5. Convert XYB→RGB
+6. Convert Linear→sRGB
+7. Output to target pixel format
 ```
 
 ### Missing Features (From JPEG XL Spec)

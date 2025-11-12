@@ -1,8 +1,10 @@
 //! JPEG XL decoder implementation
 
 use jxl_bitstream::BitReader;
+use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
 use jxl_core::*;
 use jxl_headers::JxlHeader;
+use jxl_transform::{dequantize, generate_quant_table, idct_channel, BLOCK_SIZE};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -72,37 +74,197 @@ impl JxlDecoder {
     fn decode_frame<R: Read>(&self, reader: &mut BitReader<R>, image: &mut Image) -> JxlResult<()> {
         let header = self.header.as_ref().unwrap();
 
-        // For this reference implementation, we'll decode a simplified version
-        // A full implementation would handle:
-        // - DC groups (2048x2048 regions)
-        // - AC groups (256x256 regions)
-        // - ANS entropy decoding
-        // - Inverse DCT
-        // - Color space conversion from XYB to RGB
-        // - Dequantization
+        // Full decoding pipeline:
+        // 1. Decode quantized coefficients from bitstream
+        // 2. Dequantize coefficients
+        // 3. Apply inverse DCT
+        // 4. Convert XYB to RGB color space
+        // 5. Convert linear RGB to sRGB
+        // 6. Convert to target pixel format
 
-        // Simplified decoding: read raw pixel data
-        // In reality, JPEG XL uses complex entropy coding and transforms
-        let pixel_count = header.dimensions.pixel_count();
-        let channel_count = header.num_channels;
+        let width = header.dimensions.width as usize;
+        let height = header.dimensions.height as usize;
+        let num_channels = header.num_channels;
 
-        // Note: Using explicit indexing for clarity in this reference implementation
-        #[allow(clippy::needless_range_loop)]
+        // Only support RGB/RGBA for now
+        if num_channels < 3 {
+            return Err(JxlError::UnsupportedFeature(
+                "Only RGB/RGBA images are currently supported".to_string(),
+            ));
+        }
+
+        // Step 1: Decode quantized coefficients
+        let quantized = self.decode_coefficients(reader, width, height)?;
+
+        // Step 2: Dequantize
+        let quant_table = generate_quant_table(consts::DEFAULT_QUALITY);
+        let mut dct_coeffs = vec![vec![0.0; width * height]; 3];
+        for (c, dct_coeff) in dct_coeffs.iter_mut().enumerate().take(3) {
+            self.dequantize_channel(&quantized[c], &quant_table, width, height, dct_coeff);
+        }
+
+        // Step 3: Apply inverse DCT
+        let mut xyb = vec![vec![0.0; width * height]; 3];
+        for c in 0..3 {
+            idct_channel(&dct_coeffs[c], width, height, &mut xyb[c]);
+        }
+
+        // Step 4: Convert XYB to RGB
+        let mut linear_rgb = vec![0.0; width * height * 3];
+        self.xyb_to_rgb_image(&xyb, &mut linear_rgb, width, height);
+
+        // Step 5: Decode alpha channel if present
+        let linear_rgba = if num_channels == 4 {
+            let mut rgba = vec![0.0; width * height * 4];
+            for i in 0..(width * height) {
+                rgba[i * 4] = linear_rgb[i * 3];
+                rgba[i * 4 + 1] = linear_rgb[i * 3 + 1];
+                rgba[i * 4 + 2] = linear_rgb[i * 3 + 2];
+            }
+            self.decode_alpha_channel(reader, &mut rgba, width, height)?;
+            rgba
+        } else {
+            linear_rgb
+        };
+
+        // Step 6: Convert to target pixel format
+        self.convert_to_target_format(&linear_rgba, image, width, height, num_channels)?;
+
+        Ok(())
+    }
+
+    /// Decode quantized DCT coefficients
+    fn decode_coefficients<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+        width: usize,
+        height: usize,
+    ) -> JxlResult<Vec<Vec<i16>>> {
+        let mut quantized = vec![vec![0i16; width * height]; 3];
+
+        for channel_data in quantized.iter_mut().take(3) {
+            // Read number of non-zero coefficients
+            let non_zero_count = reader.read_u32(20)? as usize;
+
+            // Read non-zero coefficients and their positions
+            for _ in 0..non_zero_count {
+                let pos = reader.read_u32(20)? as usize;
+                let is_negative = reader.read_bit()?;
+                let bits_needed = reader.read_bits(4)? as usize;
+
+                let abs_val = if bits_needed > 0 {
+                    reader.read_bits(bits_needed)? as i16
+                } else {
+                    0
+                };
+
+                let value = if is_negative { -abs_val } else { abs_val };
+
+                if pos < channel_data.len() {
+                    channel_data[pos] = value;
+                }
+            }
+        }
+
+        Ok(quantized)
+    }
+
+    /// Dequantize a channel of DCT coefficients
+    fn dequantize_channel(
+        &self,
+        quantized: &[i16],
+        quant_table: &[u16; 64],
+        width: usize,
+        height: usize,
+        output: &mut [f32],
+    ) {
+        let mut block = [0i16; 64];
+        let mut dequant_block = [0.0f32; 64];
+
+        for block_y in (0..height).step_by(BLOCK_SIZE) {
+            for block_x in (0..width).step_by(BLOCK_SIZE) {
+                // Extract block
+                for y in 0..BLOCK_SIZE.min(height - block_y) {
+                    for x in 0..BLOCK_SIZE.min(width - block_x) {
+                        block[y * BLOCK_SIZE + x] =
+                            quantized[(block_y + y) * width + (block_x + x)];
+                    }
+                }
+
+                // Dequantize
+                dequantize(&block, quant_table, &mut dequant_block);
+
+                // Store
+                for y in 0..BLOCK_SIZE.min(height - block_y) {
+                    for x in 0..BLOCK_SIZE.min(width - block_x) {
+                        output[(block_y + y) * width + (block_x + x)] =
+                            dequant_block[y * BLOCK_SIZE + x];
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convert XYB to RGB for entire image
+    fn xyb_to_rgb_image(&self, xyb: &[Vec<f32>], rgb: &mut [f32], width: usize, height: usize) {
+        let pixel_count = width * height;
+
+        for i in 0..pixel_count {
+            let x = xyb[0][i];
+            let y = xyb[1][i];
+            let b_minus_y = xyb[2][i];
+
+            let (r, g, b) = xyb_to_rgb(x, y, b_minus_y);
+
+            rgb[i * 3] = r.clamp(0.0, 1.0);
+            rgb[i * 3 + 1] = g.clamp(0.0, 1.0);
+            rgb[i * 3 + 2] = b.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Decode alpha channel
+    fn decode_alpha_channel<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+        rgba: &mut [f32],
+        width: usize,
+        height: usize,
+    ) -> JxlResult<()> {
+        for i in 0..(width * height) {
+            let alpha_u8 = reader.read_bits(8)? as u8;
+            rgba[i * 4 + 3] = alpha_u8 as f32 / 255.0;
+        }
+
+        Ok(())
+    }
+
+    /// Convert linear RGB/RGBA to target pixel format
+    fn convert_to_target_format(
+        &self,
+        linear: &[f32],
+        image: &mut Image,
+        width: usize,
+        height: usize,
+        num_channels: usize,
+    ) -> JxlResult<()> {
         match &mut image.buffer {
             ImageBuffer::U8(ref mut buffer) => {
-                for i in 0..(pixel_count * channel_count) {
-                    buffer[i] = reader.read_bits(8)? as u8;
+                // Convert linear to sRGB U8
+                for i in 0..(width * height * num_channels) {
+                    buffer[i] = linear_f32_to_srgb_u8(linear[i]);
                 }
             }
             ImageBuffer::U16(ref mut buffer) => {
-                for i in 0..(pixel_count * channel_count) {
-                    buffer[i] = reader.read_bits(16)? as u16;
+                // Convert linear to U16
+                for i in 0..(width * height * num_channels) {
+                    let srgb = jxl_color::linear_to_srgb(linear[i]);
+                    buffer[i] = (srgb * 65535.0).round().clamp(0.0, 65535.0) as u16;
                 }
             }
             ImageBuffer::F32(ref mut buffer) => {
-                for i in 0..(pixel_count * channel_count) {
-                    let bits = reader.read_bits(32)?;
-                    buffer[i] = f32::from_bits(bits as u32);
+                // Convert linear to sRGB F32
+                for i in 0..(width * height * num_channels) {
+                    buffer[i] = jxl_color::linear_to_srgb(linear[i]);
                 }
             }
         }
