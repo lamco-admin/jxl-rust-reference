@@ -4,7 +4,7 @@ use jxl_bitstream::BitReader;
 use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
 use jxl_core::*;
 use jxl_headers::JxlHeader;
-use jxl_transform::{dequantize, generate_quant_table, idct_channel, BLOCK_SIZE};
+use jxl_transform::{dequantize, generate_quant_table, idct_channel, inv_zigzag_scan_channel, BLOCK_SIZE};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -146,7 +146,14 @@ impl JxlDecoder {
             // Read number of non-zero coefficients
             let non_zero_count = reader.read_u32(20)? as usize;
 
-            // Read non-zero coefficients and their positions
+            // Calculate zigzag data size (padded to 64-coefficient blocks)
+            let blocks_x = width.div_ceil(8);
+            let blocks_y = height.div_ceil(8);
+            let num_blocks = blocks_x * blocks_y;
+            let zigzag_size = num_blocks * 64;
+
+            // Read coefficients in zigzag order
+            let mut zigzag_data = vec![0i16; zigzag_size];
             for _ in 0..non_zero_count {
                 let pos = reader.read_u32(20)? as usize;
                 let is_negative = reader.read_bit()?;
@@ -160,9 +167,18 @@ impl JxlDecoder {
 
                 let value = if is_negative { -abs_val } else { abs_val };
 
-                if pos < channel_data.len() {
-                    channel_data[pos] = value;
+                if pos < zigzag_data.len() {
+                    zigzag_data[pos] = value;
                 }
+            }
+
+            // Apply inverse zigzag to restore spatial block order
+            let mut spatial_data = Vec::new();
+            inv_zigzag_scan_channel(&zigzag_data, width, height, &mut spatial_data);
+
+            // Copy to output (may be smaller than spatial_data due to padding)
+            for (i, &val) in spatial_data.iter().enumerate().take(width * height) {
+                channel_data[i] = val;
             }
         }
 
