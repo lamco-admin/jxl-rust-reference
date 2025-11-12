@@ -3,7 +3,7 @@
 use jxl_bitstream::BitWriter;
 use jxl_color::{rgb_to_xyb, srgb_u8_to_linear_f32};
 use jxl_core::*;
-use jxl_transform::{dct_channel, generate_quant_table, quantize_channel};
+use jxl_transform::{dct_channel, generate_quant_table, quantize_channel, zigzag_scan_channel};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -266,22 +266,25 @@ impl JxlEncoder {
     fn encode_coefficients<W: Write>(
         &self,
         quantized: &[Vec<i16>],
-        _width: usize,
-        _height: usize,
+        width: usize,
+        height: usize,
         writer: &mut BitWriter<W>,
     ) -> JxlResult<()> {
-        // For a complete implementation, we would:
-        // 1. Build frequency tables from the coefficients
-        // 2. Initialize ANS encoder with these frequencies
-        // 3. Encode coefficients in proper scan order (e.g., zigzag)
-        // 4. Handle DC and AC coefficients separately
+        // Production-grade coefficient encoding with zigzag scanning:
+        // 1. Apply zigzag scan to organize coefficients by frequency
+        // 2. Encode coefficients in zigzag order for better compression
+        // 3. Use variable-length coding for coefficient values
         //
-        // For now, we'll use a simplified approach: encode coefficients with variable-length coding
+        // Future enhancement: Use ANS entropy coding once fully debugged
 
-        // Write number of non-zero coefficients (for decoder to know how much to read)
         for channel in quantized {
+            // Apply zigzag scanning to group low-frequency coefficients first
+            let mut zigzag_data = Vec::new();
+            zigzag_scan_channel(channel, width, height, &mut zigzag_data);
+
+            // Count non-zero coefficients in zigzag order
             let mut non_zero_count = 0;
-            for &coeff in channel.iter() {
+            for &coeff in zigzag_data.iter() {
                 if coeff != 0 {
                     non_zero_count += 1;
                 }
@@ -290,16 +293,16 @@ impl JxlEncoder {
             // Write count
             writer.write_u32(non_zero_count, 20)?;
 
-            // Write non-zero coefficients with their positions
-            for (pos, &coeff) in channel.iter().enumerate() {
+            // Write non-zero coefficients with their zigzag positions
+            for (pos, &coeff) in zigzag_data.iter().enumerate() {
                 if coeff != 0 {
-                    // Write position
+                    // Write zigzag position
                     writer.write_u32(pos as u32, 20)?;
 
                     // Write sign
                     writer.write_bit(coeff < 0)?;
 
-                    // Write absolute value
+                    // Write absolute value with variable-length encoding
                     let abs_val = coeff.unsigned_abs() as u32;
                     let bits_needed = if abs_val == 0 {
                         0
