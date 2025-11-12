@@ -4,7 +4,10 @@ use jxl_bitstream::BitReader;
 use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
 use jxl_core::*;
 use jxl_headers::JxlHeader;
-use jxl_transform::{dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, BLOCK_SIZE};
+use jxl_transform::{
+    dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, merge_dc_ac,
+    BLOCK_SIZE,
+};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -140,7 +143,7 @@ impl JxlDecoder {
         Ok(())
     }
 
-    /// Decode quantized DCT coefficients
+    /// Decode quantized DCT coefficients with DC/AC separation
     fn decode_coefficients<R: Read>(
         &self,
         reader: &mut BitReader<R>,
@@ -149,35 +152,19 @@ impl JxlDecoder {
     ) -> JxlResult<Vec<Vec<i16>>> {
         let mut quantized = vec![vec![0i16; width * height]; 3];
 
+        // Calculate number of blocks for AC array sizing
+        let blocks_x = width.div_ceil(8);
+        let blocks_y = height.div_ceil(8);
+        let num_blocks = blocks_x * blocks_y;
+
         for channel_data in quantized.iter_mut().take(3) {
-            // Read number of non-zero coefficients
-            let non_zero_count = reader.read_u32(20)? as usize;
+            // Decode DC and AC coefficients separately
+            let dc_coeffs = self.decode_dc_coefficients(reader)?;
+            let ac_coeffs = self.decode_ac_coefficients(reader, num_blocks)?;
 
-            // Calculate zigzag data size (padded to 64-coefficient blocks)
-            let blocks_x = width.div_ceil(8);
-            let blocks_y = height.div_ceil(8);
-            let num_blocks = blocks_x * blocks_y;
-            let zigzag_size = num_blocks * 64;
-
-            // Read coefficients in zigzag order
-            let mut zigzag_data = vec![0i16; zigzag_size];
-            for _ in 0..non_zero_count {
-                let pos = reader.read_u32(20)? as usize;
-                let is_negative = reader.read_bit()?;
-                let bits_needed = reader.read_bits(4)? as usize;
-
-                let abs_val = if bits_needed > 0 {
-                    reader.read_bits(bits_needed)? as i16
-                } else {
-                    0
-                };
-
-                let value = if is_negative { -abs_val } else { abs_val };
-
-                if pos < zigzag_data.len() {
-                    zigzag_data[pos] = value;
-                }
-            }
+            // Merge DC and AC back into zigzag format
+            let mut zigzag_data = Vec::new();
+            merge_dc_ac(&dc_coeffs, &ac_coeffs, &mut zigzag_data);
 
             // Apply inverse zigzag to restore spatial block order
             let mut spatial_data = Vec::new();
@@ -190,6 +177,79 @@ impl JxlDecoder {
         }
 
         Ok(quantized)
+    }
+
+    /// Decode DC coefficients using differential decoding
+    fn decode_dc_coefficients<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+    ) -> JxlResult<Vec<i16>> {
+        // Read number of DC coefficients
+        let num_dc = reader.read_u32(20)? as usize;
+
+        if num_dc == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut dc_coeffs = Vec::with_capacity(num_dc);
+
+        // Decode first DC value directly
+        let first_dc = self.decode_coefficient_value(reader)?;
+        dc_coeffs.push(first_dc);
+
+        // Decode remaining DC values as differences (differential decoding)
+        let mut prev_dc = first_dc;
+        for _ in 1..num_dc {
+            let diff = self.decode_coefficient_value(reader)?;
+            let dc = prev_dc + diff;
+            dc_coeffs.push(dc);
+            prev_dc = dc;
+        }
+
+        Ok(dc_coeffs)
+    }
+
+    /// Decode AC coefficients from sparse encoding
+    fn decode_ac_coefficients<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+        num_blocks: usize,
+    ) -> JxlResult<Vec<i16>> {
+        // Read number of non-zero AC coefficients
+        let non_zero_count = reader.read_u32(20)? as usize;
+
+        // AC array size: 63 coefficients per block (64 total - 1 DC)
+        let ac_size = num_blocks * 63;
+        let mut ac_coeffs = vec![0i16; ac_size];
+
+        // Decode non-zero AC coefficients
+        for _ in 0..non_zero_count {
+            let pos = reader.read_u32(20)? as usize;
+            if pos < ac_coeffs.len() {
+                ac_coeffs[pos] = self.decode_coefficient_value(reader)?;
+            }
+        }
+
+        Ok(ac_coeffs)
+    }
+
+    /// Decode a single coefficient value
+    fn decode_coefficient_value<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+    ) -> JxlResult<i16> {
+        // Read sign
+        let is_negative = reader.read_bit()?;
+
+        // Read absolute value
+        let bits_needed = reader.read_bits(4)? as usize;
+        let abs_val = if bits_needed > 0 {
+            reader.read_bits(bits_needed)? as i16
+        } else {
+            0
+        };
+
+        Ok(if is_negative { -abs_val } else { abs_val })
     }
 
     /// Dequantize a channel of DCT coefficients

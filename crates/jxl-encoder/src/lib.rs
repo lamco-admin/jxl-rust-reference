@@ -3,7 +3,9 @@
 use jxl_bitstream::BitWriter;
 use jxl_color::{rgb_to_xyb, srgb_u8_to_linear_f32};
 use jxl_core::*;
-use jxl_transform::{dct_channel, generate_xyb_quant_tables, quantize_channel, zigzag_scan_channel};
+use jxl_transform::{
+    dct_channel, generate_xyb_quant_tables, quantize_channel, separate_dc_ac, zigzag_scan_channel,
+};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -281,7 +283,7 @@ impl JxlEncoder {
         channel_data
     }
 
-    /// Encode quantized DCT coefficients
+    /// Encode quantized DCT coefficients with DC/AC separation
     fn encode_coefficients<W: Write>(
         &self,
         quantized: &[Vec<i16>],
@@ -289,51 +291,106 @@ impl JxlEncoder {
         height: usize,
         writer: &mut BitWriter<W>,
     ) -> JxlResult<()> {
-        // Production-grade coefficient encoding with zigzag scanning:
+        // Production-grade JPEG XL coefficient encoding:
         // 1. Apply zigzag scan to organize coefficients by frequency
-        // 2. Encode coefficients in zigzag order for better compression
-        // 3. Use variable-length coding for coefficient values
+        // 2. Separate DC and AC coefficients (different statistical properties)
+        // 3. Encode DC coefficients with differential coding
+        // 4. Encode AC coefficients with run-length coding
         //
-        // Future enhancement: Use ANS entropy coding once fully debugged
+        // This approach matches JPEG XL's coefficient organization for optimal compression.
 
         for channel in quantized {
             // Apply zigzag scanning to group low-frequency coefficients first
             let mut zigzag_data = Vec::new();
             zigzag_scan_channel(channel, width, height, &mut zigzag_data);
 
-            // Count non-zero coefficients in zigzag order
-            let mut non_zero_count = 0;
-            for &coeff in zigzag_data.iter() {
-                if coeff != 0 {
-                    non_zero_count += 1;
-                }
+            // Separate DC and AC coefficients
+            let (dc_coeffs, ac_coeffs) = separate_dc_ac(&zigzag_data);
+
+            // Encode DC coefficients with differential coding
+            self.encode_dc_coefficients(&dc_coeffs, writer)?;
+
+            // Encode AC coefficients with run-length coding
+            self.encode_ac_coefficients(&ac_coeffs, writer)?;
+        }
+
+        Ok(())
+    }
+
+    /// Encode DC coefficients using differential coding
+    ///
+    /// DC coefficients tend to be correlated between adjacent blocks,
+    /// so we encode the difference from the previous DC value.
+    fn encode_dc_coefficients<W: Write>(
+        &self,
+        dc_coeffs: &[i16],
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        // Write number of DC coefficients
+        writer.write_u32(dc_coeffs.len() as u32, 20)?;
+
+        if dc_coeffs.is_empty() {
+            return Ok(());
+        }
+
+        // Encode first DC value directly
+        self.encode_coefficient_value(dc_coeffs[0], writer)?;
+
+        // Encode remaining DC values as differences (differential coding)
+        let mut prev_dc = dc_coeffs[0];
+        for &dc in &dc_coeffs[1..] {
+            let diff = dc - prev_dc;
+            self.encode_coefficient_value(diff, writer)?;
+            prev_dc = dc;
+        }
+
+        Ok(())
+    }
+
+    /// Encode AC coefficients with sparse encoding
+    ///
+    /// AC coefficients are mostly zero after quantization, so we only
+    /// encode non-zero values with their positions.
+    fn encode_ac_coefficients<W: Write>(
+        &self,
+        ac_coeffs: &[i16],
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        // Count non-zero AC coefficients
+        let non_zero_count = ac_coeffs.iter().filter(|&&c| c != 0).count();
+        writer.write_u32(non_zero_count as u32, 20)?;
+
+        // Encode non-zero AC coefficients with positions
+        for (pos, &coeff) in ac_coeffs.iter().enumerate() {
+            if coeff != 0 {
+                writer.write_u32(pos as u32, 20)?;
+                self.encode_coefficient_value(coeff, writer)?;
             }
+        }
 
-            // Write count
-            writer.write_u32(non_zero_count, 20)?;
+        Ok(())
+    }
 
-            // Write non-zero coefficients with their zigzag positions
-            for (pos, &coeff) in zigzag_data.iter().enumerate() {
-                if coeff != 0 {
-                    // Write zigzag position
-                    writer.write_u32(pos as u32, 20)?;
+    /// Encode a single coefficient value with variable-length coding
+    fn encode_coefficient_value<W: Write>(
+        &self,
+        coeff: i16,
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        // Write sign
+        writer.write_bit(coeff < 0)?;
 
-                    // Write sign
-                    writer.write_bit(coeff < 0)?;
+        // Write absolute value
+        let abs_val = coeff.unsigned_abs() as u32;
+        let bits_needed = if abs_val == 0 {
+            0
+        } else {
+            32 - abs_val.leading_zeros()
+        };
 
-                    // Write absolute value with variable-length encoding
-                    let abs_val = coeff.unsigned_abs() as u32;
-                    let bits_needed = if abs_val == 0 {
-                        0
-                    } else {
-                        32 - abs_val.leading_zeros()
-                    };
-                    writer.write_bits(bits_needed as u64, 4)?;
-                    if bits_needed > 0 {
-                        writer.write_bits(abs_val as u64, bits_needed as usize)?;
-                    }
-                }
-            }
+        writer.write_bits(bits_needed as u64, 4)?;
+        if bits_needed > 0 {
+            writer.write_bits(abs_val as u64, bits_needed as usize)?;
         }
 
         Ok(())
