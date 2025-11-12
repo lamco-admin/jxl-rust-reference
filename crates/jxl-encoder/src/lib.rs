@@ -3,7 +3,7 @@
 use jxl_bitstream::BitWriter;
 use jxl_color::{rgb_to_xyb, srgb_u8_to_linear_f32};
 use jxl_core::*;
-use jxl_transform::{dct_channel, generate_quant_table, quantize_channel, zigzag_scan_channel};
+use jxl_transform::{dct_channel, generate_xyb_quant_tables, quantize_channel, zigzag_scan_channel};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -166,18 +166,37 @@ impl JxlEncoder {
             dct_channel(&channel, width, height, dct_coeff);
         }
 
-        // Step 4: Quantize coefficients
-        let quant_table = generate_quant_table(self.options.quality);
+        // Step 4: Quantize coefficients with XYB-tuned tables
+        // Use per-channel quantization for optimal perceptual quality
+        let xyb_tables = generate_xyb_quant_tables(self.options.quality);
         let mut quantized = vec![Vec::new(); 3];
-        for c in 0..3 {
-            quantize_channel(
-                &dct_coeffs[c],
-                width,
-                height,
-                &quant_table,
-                &mut quantized[c],
-            );
-        }
+
+        // X channel (index 0)
+        quantize_channel(
+            &dct_coeffs[0],
+            width,
+            height,
+            &xyb_tables.x_table,
+            &mut quantized[0],
+        );
+
+        // Y channel (index 1)
+        quantize_channel(
+            &dct_coeffs[1],
+            width,
+            height,
+            &xyb_tables.y_table,
+            &mut quantized[1],
+        );
+
+        // B-Y channel (index 2)
+        quantize_channel(
+            &dct_coeffs[2],
+            width,
+            height,
+            &xyb_tables.b_table,
+            &mut quantized[2],
+        );
 
         // Step 5: Encode quantized coefficients using simplified ANS
         self.encode_coefficients(&quantized, width, height, writer)?;
