@@ -44,10 +44,6 @@ serde = { version = "1.0", features = ["derive"] }
 # Benchmarking
 criterion = "0.5"
 
-[[bench]]
-name = "transforms"
-harness = false
-
 [profile.release]
 opt-level = 3
 lto = true
