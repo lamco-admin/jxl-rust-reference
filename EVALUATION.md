@@ -1,6 +1,5 @@
 # JPEG XL Rust Reference Implementation - Critical Evaluation
 
-**Evaluator:** Claude Code
 **Date:** November 12, 2025
 **Developer:** Greg Lamberson, Lamco Development
 
