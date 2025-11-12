@@ -3,13 +3,13 @@
 use jxl_bitstream::BitReader;
 use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
 use jxl_core::*;
-use jxl_headers::JxlHeader;
+use jxl_headers::{Container, JxlHeader};
 use jxl_transform::{
     dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, merge_dc_ac,
     BLOCK_SIZE,
 };
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 
 /// JPEG XL decoder
@@ -29,9 +29,24 @@ impl JxlDecoder {
         self.decode(reader)
     }
 
-    /// Decode from a reader
-    pub fn decode<R: Read>(&mut self, reader: R) -> JxlResult<Image> {
-        let mut bit_reader = BitReader::new(reader);
+    /// Decode from a reader (supports both container and naked codestream)
+    pub fn decode<R: Read>(&mut self, mut reader: R) -> JxlResult<Image> {
+        // Step 1: Read input into buffer to support container detection
+        let mut input_data = Vec::new();
+        reader.read_to_end(&mut input_data)?;
+
+        // Step 2: Try to parse as container format first
+        let codestream = if input_data.starts_with(&jxl_headers::CONTAINER_SIGNATURE) {
+            // Parse as container and extract codestream
+            let container = Container::read(&mut Cursor::new(&input_data))?;
+            container.extract_codestream()?
+        } else {
+            // Use data directly as naked codestream
+            input_data
+        };
+
+        // Step 3: Parse header from codestream
+        let mut bit_reader = BitReader::new(Cursor::new(&codestream));
 
         // Parse header
         let header = JxlHeader::parse(&mut bit_reader)?;

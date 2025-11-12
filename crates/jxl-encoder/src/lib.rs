@@ -3,11 +3,12 @@
 use jxl_bitstream::BitWriter;
 use jxl_color::{rgb_to_xyb, srgb_u8_to_linear_f32};
 use jxl_core::*;
+use jxl_headers::Container;
 use jxl_transform::{
     dct_channel, generate_xyb_quant_tables, quantize_channel, separate_dc_ac, zigzag_scan_channel,
 };
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Cursor, Write};
 use std::path::Path;
 
 /// Encoder options
@@ -76,61 +77,72 @@ impl JxlEncoder {
         self.encode(image, writer)
     }
 
-    /// Encode an image to a writer
-    pub fn encode<W: Write>(&self, image: &Image, writer: W) -> JxlResult<()> {
-        let mut bit_writer = BitWriter::new(writer);
+    /// Encode an image to a writer with JPEG XL container format
+    pub fn encode<W: Write>(&self, image: &Image, mut writer: W) -> JxlResult<()> {
+        // Step 1: Encode codestream to buffer
+        let mut codestream = Vec::new();
+        {
+            let mut bit_writer = BitWriter::new(Cursor::new(&mut codestream));
 
-        // Write signature
-        bit_writer.write_bits(0x0AFF, 16)?;
+            // Write naked codestream signature
+            bit_writer.write_bits(0x0AFF, 16)?;
 
-        // Write size header (simplified)
-        let small = image.width() <= 32 && image.height() <= 32;
-        bit_writer.write_bits(if small { 0 } else { 1 }, 8)?;
+            // Write size header (simplified)
+            let small = image.width() <= 32 && image.height() <= 32;
+            bit_writer.write_bits(if small { 0 } else { 1 }, 8)?;
 
-        if small {
-            bit_writer.write_bits((image.width() - 1) as u64, 5)?;
-            bit_writer.write_bits((image.height() - 1) as u64, 5)?;
-        } else {
-            bit_writer.write_u32(image.width(), 9)?;
-            bit_writer.write_u32(image.height(), 9)?;
+            if small {
+                bit_writer.write_bits((image.width() - 1) as u64, 5)?;
+                bit_writer.write_bits((image.height() - 1) as u64, 5)?;
+            } else {
+                bit_writer.write_u32(image.width(), 9)?;
+                bit_writer.write_u32(image.height(), 9)?;
+            }
+
+            // Write bit depth
+            let bit_depth_enc = match image.pixel_type {
+                PixelType::U8 => 0,
+                PixelType::U16 => 2,
+                PixelType::F16 => 2,
+                PixelType::F32 => 3,
+            };
+            bit_writer.write_bits(bit_depth_enc, 2)?;
+            if bit_depth_enc == 3 {
+                bit_writer.write_bits(31, 6)?; // 32-bit
+            }
+
+            // Write channels
+            let num_extra = image.channel_count() - 3;
+            bit_writer.write_bits(num_extra as u64, 2)?;
+
+            // Write color encoding
+            let color_enc = match image.color_encoding {
+                ColorEncoding::SRGB => 0,
+                ColorEncoding::LinearSRGB => 1,
+                ColorEncoding::XYB => 2,
+                _ => 3,
+            };
+            bit_writer.write_bits(color_enc, 2)?;
+
+            // Write orientation
+            bit_writer.write_bits(1, 3)?; // Identity
+
+            // Write flags
+            bit_writer.write_bit(false)?; // not animation
+            bit_writer.write_bit(false)?; // no preview
+
+            // Encode frame data
+            self.encode_frame(image, &mut bit_writer)?;
+
+            bit_writer.flush()?;
         }
 
-        // Write bit depth
-        let bit_depth_enc = match image.pixel_type {
-            PixelType::U8 => 0,
-            PixelType::U16 => 2,
-            PixelType::F16 => 2,
-            PixelType::F32 => 3,
-        };
-        bit_writer.write_bits(bit_depth_enc, 2)?;
-        if bit_depth_enc == 3 {
-            bit_writer.write_bits(31, 6)?; // 32-bit
-        }
+        // Step 2: Wrap codestream in JPEG XL container
+        let container = Container::with_codestream(codestream);
 
-        // Write channels
-        let num_extra = image.channel_count() - 3;
-        bit_writer.write_bits(num_extra as u64, 2)?;
+        // Step 3: Write container to output
+        container.write(&mut writer)?;
 
-        // Write color encoding
-        let color_enc = match image.color_encoding {
-            ColorEncoding::SRGB => 0,
-            ColorEncoding::LinearSRGB => 1,
-            ColorEncoding::XYB => 2,
-            _ => 3,
-        };
-        bit_writer.write_bits(color_enc, 2)?;
-
-        // Write orientation
-        bit_writer.write_bits(1, 3)?; // Identity
-
-        // Write flags
-        bit_writer.write_bit(false)?; // not animation
-        bit_writer.write_bit(false)?; // no preview
-
-        // Encode frame data
-        self.encode_frame(image, &mut bit_writer)?;
-
-        bit_writer.flush()?;
         Ok(())
     }
 
