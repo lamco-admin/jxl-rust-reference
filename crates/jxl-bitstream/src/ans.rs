@@ -48,13 +48,8 @@ impl AnsDecoder {
         }
 
         self.table.clear();
-        self.table.resize(
-            ANS_TAB_SIZE,
-            AnsTableEntry {
-                freq: 0,
-                offset: 0,
-            },
-        );
+        self.table
+            .resize(ANS_TAB_SIZE, AnsTableEntry { freq: 0, offset: 0 });
 
         let mut pos = 0;
         for (symbol, &freq) in frequencies.iter().enumerate() {
@@ -142,13 +137,8 @@ impl AnsEncoder {
         }
 
         self.table.clear();
-        self.table.resize(
-            frequencies.len(),
-            AnsTableEntry {
-                freq: 0,
-                offset: 0,
-            },
-        );
+        self.table
+            .resize(frequencies.len(), AnsTableEntry { freq: 0, offset: 0 });
 
         let mut cumulative = 0u32;
         for (symbol, &freq) in frequencies.iter().enumerate() {

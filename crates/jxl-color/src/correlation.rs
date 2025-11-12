@@ -17,7 +17,7 @@ pub fn apply_ycocg(rgb: &[i32], ycocg: &mut [i32]) {
         let cg = g - t;
         let y = t + (cg >> 1);
 
-        ycocg[i] = y;      // Y
+        ycocg[i] = y; // Y
         ycocg[i + 1] = co; // Co
         ycocg[i + 2] = cg; // Cg
     }

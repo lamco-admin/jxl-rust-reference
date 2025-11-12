@@ -3,11 +3,9 @@
 //! XYB is JPEG XL's perceptual color space, inspired by the human visual system.
 //! It's designed to be more perceptually uniform than RGB.
 
-use num_traits::Float;
-
 /// XYB color space transformation matrices
 /// These values are from the JPEG XL specification
-
+///
 /// Opsin absorbance matrix (LMS color space)
 const OPSIN_ABSORBANCE_MATRIX: [[f32; 3]; 3] = [
     [0.299, 0.587, 0.114],
@@ -16,13 +14,11 @@ const OPSIN_ABSORBANCE_MATRIX: [[f32; 3]; 3] = [
 ];
 
 /// Inverse opsin absorbance matrix
-const OPSIN_ABSORBANCE_INV_MATRIX: [[f32; 3]; 3] = [
-    [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0],
-];
+const OPSIN_ABSORBANCE_INV_MATRIX: [[f32; 3]; 3] =
+    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// XYB bias values
+#[allow(dead_code)]
 const XYB_BIAS: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// Convert linear RGB to XYB color space

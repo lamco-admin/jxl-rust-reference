@@ -3,16 +3,16 @@
 //! This crate provides the fundamental data structures and types used throughout
 //! the JPEG XL implementation, including image metadata, pixel formats, and error types.
 
+pub mod consts;
 pub mod error;
-pub mod types;
 pub mod image;
 pub mod metadata;
-pub mod consts;
+pub mod types;
 
 pub use error::{JxlError, JxlResult};
-pub use types::*;
 pub use image::*;
 pub use metadata::*;
+pub use types::*;
 
 /// JPEG XL file signature
 pub const JXL_SIGNATURE: [u8; 12] = [
