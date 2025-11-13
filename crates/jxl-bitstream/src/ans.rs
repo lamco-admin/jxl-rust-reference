@@ -36,6 +36,8 @@ pub struct AnsDistribution {
     total_freq: u32,
     /// Alphabet size
     alphabet_size: usize,
+    /// Minimum value in the original i16 data (for mapping)
+    min_val: i16,
 }
 
 impl AnsDistribution {
@@ -109,6 +111,7 @@ impl AnsDistribution {
             decode_table,
             total_freq: ANS_TAB_SIZE,
             alphabet_size,
+            min_val: 0, // Default for from_frequencies (caller should use build_distribution for i16)
         })
     }
 
@@ -139,6 +142,16 @@ impl AnsDistribution {
     /// Get the total frequency (should equal ANS_TAB_SIZE)
     pub fn total_freq(&self) -> u32 {
         self.total_freq
+    }
+
+    /// Get the minimum value from original i16 data (for encoding/decoding mapping)
+    pub fn min_val(&self) -> i16 {
+        self.min_val
+    }
+
+    /// Get the alphabet size
+    pub fn alphabet_size(&self) -> usize {
+        self.alphabet_size
     }
 
     /// Find symbol from slot (for decoding)
@@ -186,7 +199,7 @@ impl RansEncoder {
     }
 
     /// Finalize encoding
-    pub fn finalize(mut self) -> Vec<u8> {
+    pub fn finalize(self) -> Vec<u8> {
         // Reverse renormalization bytes for decoding (LIFO order)
         // CRITICAL: Reverse in 16-bit chunks, not byte-by-byte!
         // We write 16 bits (2 bytes) at a time, so reverse in pairs
@@ -306,9 +319,11 @@ pub fn build_distribution(data: &[i16]) -> AnsDistribution {
         frequencies[idx] = freq;
     }
 
-    // Create distribution
-    AnsDistribution::from_frequencies(&frequencies)
-        .unwrap_or_else(|_| AnsDistribution::uniform(range).unwrap())
+    // Create distribution and set min_val
+    let mut dist = AnsDistribution::from_frequencies(&frequencies)
+        .unwrap_or_else(|_| AnsDistribution::uniform(range).unwrap());
+    dist.min_val = min_val;
+    dist
 }
 
 #[cfg(test)]

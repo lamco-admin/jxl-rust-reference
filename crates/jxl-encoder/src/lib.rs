@@ -1,6 +1,6 @@
 //! JPEG XL encoder implementation
 
-use jxl_bitstream::BitWriter;
+use jxl_bitstream::{ans::*, BitWriter};
 use jxl_color::{rgb_to_xyb_image_simd, srgb_u8_to_linear_f32};
 use jxl_core::*;
 use jxl_headers::Container;
@@ -345,10 +345,10 @@ impl JxlEncoder {
         Ok(())
     }
 
-    /// Encode DC coefficients using differential coding
+    /// Encode DC coefficients using ANS with differential coding
     ///
     /// DC coefficients tend to be correlated between adjacent blocks,
-    /// so we encode the difference from the previous DC value.
+    /// so we encode the difference from the previous DC value using ANS.
     fn encode_dc_coefficients<W: Write>(
         &self,
         dc_coeffs: &[i16],
@@ -361,67 +361,92 @@ impl JxlEncoder {
             return Ok(());
         }
 
-        // Encode first DC value directly
-        self.encode_coefficient_value(dc_coeffs[0], writer)?;
+        // Apply differential coding
+        let mut diffs = Vec::with_capacity(dc_coeffs.len());
+        diffs.push(dc_coeffs[0]);
+        for i in 1..dc_coeffs.len() {
+            diffs.push(dc_coeffs[i] - dc_coeffs[i - 1]);
+        }
 
-        // Encode remaining DC values as differences (differential coding)
-        let mut prev_dc = dc_coeffs[0];
-        for &dc in &dc_coeffs[1..] {
-            let diff = dc - prev_dc;
-            self.encode_coefficient_value(diff, writer)?;
-            prev_dc = dc;
+        // Build ANS distribution from differential DC coefficients
+        let dist = build_distribution(&diffs);
+
+        // Encode using ANS
+        let mut encoder = RansEncoder::new();
+        for &diff in diffs.iter().rev() {
+            // Map i16 to usize for ANS (shift to positive range)
+            let symbol = self.map_coeff_to_symbol(diff, &dist);
+            encoder.encode_symbol(symbol, &dist)?;
+        }
+
+        let encoded = encoder.finalize();
+
+        // Write encoded length and data
+        writer.write_u32(encoded.len() as u32, 20)?;
+        for byte in encoded {
+            writer.write_bits(byte as u64, 8)?;
         }
 
         Ok(())
     }
 
-    /// Encode AC coefficients with sparse encoding
+    /// Encode AC coefficients using ANS with sparse encoding
     ///
     /// AC coefficients are mostly zero after quantization, so we only
-    /// encode non-zero values with their positions.
+    /// encode non-zero values with their positions using ANS.
     fn encode_ac_coefficients<W: Write>(
         &self,
         ac_coeffs: &[i16],
         writer: &mut BitWriter<W>,
     ) -> JxlResult<()> {
-        // Count non-zero AC coefficients
-        let non_zero_count = ac_coeffs.iter().filter(|&&c| c != 0).count();
-        writer.write_u32(non_zero_count as u32, 20)?;
+        // Collect non-zero AC coefficients
+        let non_zero: Vec<(usize, i16)> = ac_coeffs
+            .iter()
+            .enumerate()
+            .filter(|(_, &c)| c != 0)
+            .map(|(pos, &c)| (pos, c))
+            .collect();
 
-        // Encode non-zero AC coefficients with positions
-        for (pos, &coeff) in ac_coeffs.iter().enumerate() {
-            if coeff != 0 {
-                writer.write_u32(pos as u32, 20)?;
-                self.encode_coefficient_value(coeff, writer)?;
-            }
+        writer.write_u32(non_zero.len() as u32, 20)?;
+
+        if non_zero.is_empty() {
+            return Ok(());
+        }
+
+        // Build ANS distribution from non-zero AC coefficients
+        let values: Vec<i16> = non_zero.iter().map(|(_, v)| *v).collect();
+        let dist = build_distribution(&values);
+
+        // Encode positions using simple variable-length (positions are not compressible with ANS)
+        for &(pos, _) in &non_zero {
+            writer.write_u32(pos as u32, 20)?;
+        }
+
+        // Encode values using ANS
+        let mut encoder = RansEncoder::new();
+        for &(_, val) in non_zero.iter().rev() {
+            let symbol = self.map_coeff_to_symbol(val, &dist);
+            encoder.encode_symbol(symbol, &dist)?;
+        }
+
+        let encoded = encoder.finalize();
+
+        // Write encoded length and data
+        writer.write_u32(encoded.len() as u32, 20)?;
+        for byte in encoded {
+            writer.write_bits(byte as u64, 8)?;
         }
 
         Ok(())
     }
 
-    /// Encode a single coefficient value with variable-length coding
-    fn encode_coefficient_value<W: Write>(
-        &self,
-        coeff: i16,
-        writer: &mut BitWriter<W>,
-    ) -> JxlResult<()> {
-        // Write sign
-        writer.write_bit(coeff < 0)?;
-
-        // Write absolute value
-        let abs_val = coeff.unsigned_abs() as u32;
-        let bits_needed = if abs_val == 0 {
-            0
-        } else {
-            32 - abs_val.leading_zeros()
-        };
-
-        writer.write_bits(bits_needed as u64, 4)?;
-        if bits_needed > 0 {
-            writer.write_bits(abs_val as u64, bits_needed as usize)?;
-        }
-
-        Ok(())
+    /// Map i16 coefficient to ANS symbol index
+    ///
+    /// ANS build_distribution maps i16 values to 0-based alphabet internally.
+    /// We need to apply the same mapping when encoding.
+    fn map_coeff_to_symbol(&self, coeff: i16, dist: &AnsDistribution) -> usize {
+        // Map coefficient to 0-based alphabet using the distribution's min_val
+        (coeff - dist.min_val()) as usize
     }
 
     /// Encode alpha channel separately
