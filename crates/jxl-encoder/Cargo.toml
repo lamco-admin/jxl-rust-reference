@@ -9,5 +9,6 @@ repository.workspace = true
 jxl-core = { path = "../jxl-core" }
 jxl-bitstream = { path = "../jxl-bitstream" }
 jxl-color = { path = "../jxl-color" }
+jxl-headers = { path = "../jxl-headers" }
 jxl-transform = { path = "../jxl-transform" }
 rayon.workspace = true

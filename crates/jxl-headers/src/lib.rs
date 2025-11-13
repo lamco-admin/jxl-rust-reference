@@ -1,8 +1,14 @@
 //! JPEG XL header parsing and generation
 
+pub mod animation;
+pub mod container;
+
 use jxl_bitstream::BitReader;
 use jxl_core::*;
 use std::io::Read;
+
+pub use animation::{Animation, AnimationHeader, BlendMode, FrameHeader};
+pub use container::{Container, JxlBox, BoxType, CONTAINER_SIGNATURE, CODESTREAM_SIGNATURE};
 
 /// JPEG XL file header
 #[derive(Debug, Clone)]
