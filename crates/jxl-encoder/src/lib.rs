@@ -375,14 +375,21 @@ impl JxlEncoder {
             freq_map.insert(0, 1);
         }
 
-        // Convert to frequency vector
+        // Convert to frequency vector - only include symbols that appear
+        // Don't waste probability mass on symbols that never occur
         let max_symbol = *freq_map.keys().max().unwrap_or(&0);
         let alphabet_size = (max_symbol + 1) as usize;
 
-        // Start with minimum frequency of 1 for robustness (helps with unseen symbols)
-        let mut frequencies = vec![1u32; alphabet_size];
+        // Build sparse frequency table
+        let mut frequencies = vec![0u32; alphabet_size];
         for (&symbol, &freq) in &freq_map {
-            frequencies[symbol as usize] += freq;
+            // Add small base frequency for stability, plus actual frequency
+            frequencies[symbol as usize] = freq + 1;
+        }
+
+        // Ensure at least one symbol has non-zero frequency
+        if frequencies.iter().all(|&f| f == 0) {
+            frequencies[0] = 1;
         }
 
         AnsDistribution::from_frequencies(&frequencies).unwrap_or_else(|_| {
