@@ -46,7 +46,7 @@ fn calculate_psnr(original: &Image, decoded: &Image) -> f64 {
 
     let mut mse = 0.0;
     for (o, d) in orig_buf.iter().zip(dec_buf.iter()) {
-        let diff = (*o as f64 - *d as f64);
+        let diff = *o as f64 - *d as f64;
         mse += diff * diff;
     }
 
