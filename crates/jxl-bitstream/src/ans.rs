@@ -273,15 +273,20 @@ impl RansDecoder {
         // Renormalize: read 16 bits at a time (matching libjxl)
         // Threshold: state < ANS_L (65536)
         if self.state < ANS_L {
-            if self.pos + 1 >= self.input.len() {
+            // Check if we have bytes available to renormalize
+            if self.pos + 1 < self.input.len() {
+                // Read 16 bits (2 bytes) little-endian
+                let bits = self.input[self.pos] as u32 | ((self.input[self.pos + 1] as u32) << 8);
+                self.state = (self.state << 16) | bits;
+                self.pos += 2;
+            }
+            // If we can't renormalize but state is still valid (>= ANS_TAB_SIZE), continue
+            // This handles the case where we're at the end of the stream
+            else if self.state < ANS_TAB_SIZE {
                 return Err(JxlError::InvalidBitstream(
                     "Unexpected end of ANS stream".to_string(),
                 ));
             }
-            // Read 16 bits (2 bytes) little-endian
-            let bits = self.input[self.pos] as u32 | ((self.input[self.pos + 1] as u32) << 8);
-            self.state = (self.state << 16) | bits;
-            self.pos += 2;
         }
 
         Ok(symbol)
