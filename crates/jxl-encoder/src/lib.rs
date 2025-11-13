@@ -1,12 +1,12 @@
 //! JPEG XL encoder implementation
 
 use jxl_bitstream::BitWriter;
-use jxl_color::{rgb_to_xyb, srgb_u8_to_linear_f32};
+use jxl_color::{rgb_to_xyb, rgb_to_xyb_image_simd, srgb_u8_to_linear_f32};
 use jxl_core::*;
 use jxl_headers::Container;
 use jxl_transform::{
-    dct_channel, generate_adaptive_quant_map, generate_xyb_quant_tables, quantize_channel,
-    quantize_channel_adaptive, separate_dc_ac, zigzag_scan_channel,
+    dct_channel, dct_channel_simd, generate_adaptive_quant_map, generate_xyb_quant_tables,
+    quantize_channel, quantize_channel_adaptive, separate_dc_ac, zigzag_scan_channel,
 };
 use rayon::prelude::*;
 use std::fs::File;
@@ -179,18 +179,18 @@ impl JxlEncoder {
         // Step 1: Convert to f32 and normalize to [0, 1]
         let linear_rgb = self.convert_to_linear_f32(image)?;
 
-        // Step 2: Convert RGB to XYB color space
+        // Step 2: Convert RGB to XYB color space (SIMD-optimized)
         let mut xyb = vec![0.0; width * height * 3];
-        self.rgb_to_xyb_image(&linear_rgb, &mut xyb, width, height);
+        rgb_to_xyb_image_simd(&linear_rgb, &mut xyb, width, height);
 
-        // Step 3: Apply DCT transformation to each channel (parallel)
+        // Step 3: Apply DCT transformation to each channel (parallel with SIMD)
         // Process X, Y, and B-Y channels independently for maximum throughput
         let dct_coeffs: Vec<Vec<f32>> = (0..3)
             .into_par_iter()
             .map(|c| {
                 let channel = self.extract_channel(&xyb, width, height, c, 3);
                 let mut dct_coeff = vec![0.0; width * height];
-                dct_channel(&channel, width, height, &mut dct_coeff);
+                dct_channel_simd(&channel, width, height, &mut dct_coeff);
                 dct_coeff
             })
             .collect();

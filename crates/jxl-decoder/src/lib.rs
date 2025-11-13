@@ -1,12 +1,12 @@
 //! JPEG XL decoder implementation
 
 use jxl_bitstream::BitReader;
-use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
+use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb, xyb_to_rgb_image_simd};
 use jxl_core::*;
 use jxl_headers::{Container, JxlHeader};
 use jxl_transform::{
-    dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, merge_dc_ac,
-    BLOCK_SIZE,
+    dequantize, generate_xyb_quant_tables, idct_channel, idct_channel_simd,
+    inv_zigzag_scan_channel, merge_dc_ac, BLOCK_SIZE,
 };
 use rayon::prelude::*;
 use std::fs::File;
@@ -130,19 +130,26 @@ impl JxlDecoder {
             })
             .collect();
 
-        // Step 3: Apply inverse DCT (parallel)
+        // Step 3: Apply inverse DCT (parallel with SIMD)
         let xyb: Vec<Vec<f32>> = dct_coeffs
             .par_iter()
             .map(|dct_coeff| {
                 let mut xyb_channel = vec![0.0; width * height];
-                idct_channel(dct_coeff, width, height, &mut xyb_channel);
+                idct_channel_simd(dct_coeff, width, height, &mut xyb_channel);
                 xyb_channel
             })
             .collect();
 
-        // Step 4: Convert XYB to RGB
+        // Step 4: Convert XYB to RGB (SIMD-optimized)
         let mut linear_rgb = vec![0.0; width * height * 3];
-        self.xyb_to_rgb_image(&xyb, &mut linear_rgb, width, height);
+        // Interleave XYB channels for batch conversion
+        let mut xyb_interleaved = vec![0.0; width * height * 3];
+        for i in 0..(width * height) {
+            xyb_interleaved[i * 3] = xyb[0][i];     // X
+            xyb_interleaved[i * 3 + 1] = xyb[1][i]; // Y
+            xyb_interleaved[i * 3 + 2] = xyb[2][i]; // B-Y
+        }
+        xyb_to_rgb_image_simd(&xyb_interleaved, &mut linear_rgb, width, height);
 
         // Step 5: Decode alpha channel if present
         let linear_rgba = if num_channels == 4 {
