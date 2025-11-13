@@ -8,3 +8,4 @@ repository.workspace = true
 [dependencies]
 jxl-core = { path = "../jxl-core" }
 num-traits.workspace = true
+lazy_static = "1.4"

@@ -1,0 +1,16 @@
+[package]
+name = "diagnose-gradient"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+jxl-color = { path = "../../crates/jxl-color" }
+jxl-transform = { path = "../../crates/jxl-transform" }
+jxl-core = { path = "../../crates/jxl-core" }
+jxl-bitstream = { path = "../../crates/jxl-bitstream" }
+jxl-encoder = { path = "../../crates/jxl-encoder" }
+jxl-decoder = { path = "../../crates/jxl-decoder" }

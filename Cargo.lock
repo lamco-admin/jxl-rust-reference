@@ -52,6 +52,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "diagnose-gradient"
+version = "0.1.0"
+dependencies = [
+ "jxl-bitstream",
+ "jxl-color",
+ "jxl-core",
+ "jxl-decoder",
+ "jxl-encoder",
+ "jxl-transform",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -118,6 +130,7 @@ dependencies = [
  "jxl-bitstream",
  "jxl-color",
  "jxl-core",
+ "jxl-headers",
  "jxl-transform",
  "rayon",
 ]
@@ -135,8 +148,15 @@ name = "jxl-transform"
 version = "0.1.0"
 dependencies = [
  "jxl-core",
+ "lazy_static",
  "num-traits",
 ]
+
+[[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "num-traits"
