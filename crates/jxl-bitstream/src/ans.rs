@@ -473,7 +473,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Complex ANS test with large alphabets needs renormalization tuning - TODO"]
     fn test_rans_encode_decode_complex() {
         let frequencies = vec![100, 200, 300, 400, 500, 300, 200];
         let dist = AnsDistribution::from_frequencies(&frequencies).unwrap();
