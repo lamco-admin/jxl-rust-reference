@@ -5,6 +5,8 @@
 //!
 //! This implementation uses the actual JPEG XL specification values for production use.
 
+// Allow excessive precision for spec-mandated libjxl opsin absorbance matrix values
+#[allow(clippy::excessive_precision)]
 /// Opsin absorbance matrix from JPEG XL specification (libjxl production values)
 /// These values model human cone cell sensitivity for perceptually uniform color space
 const OPSIN_ABSORBANCE_MATRIX: [[f32; 3]; 3] = [
@@ -13,6 +15,7 @@ const OPSIN_ABSORBANCE_MATRIX: [[f32; 3]; 3] = [
     [0.24342268924547819, 0.20476744424496821, 0.55180986650951361],
 ];
 
+#[allow(clippy::excessive_precision)]
 /// Inverse opsin absorbance matrix (from libjxl)
 const OPSIN_ABSORBANCE_INV_MATRIX: [[f32; 3]; 3] = [
     [11.031566901960783, -9.866943921568629, -0.16462299647058826],
@@ -20,6 +23,7 @@ const OPSIN_ABSORBANCE_INV_MATRIX: [[f32; 3]; 3] = [
     [-3.6588512862745097, 2.7129230470588235, 1.9459282392156863],
 ];
 
+#[allow(clippy::excessive_precision)]
 /// Opsin absorbance bias (from libjxl)
 const OPSIN_ABSORBANCE_BIAS: f32 = 0.0037930732552754493;
 
