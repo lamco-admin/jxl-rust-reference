@@ -10,6 +10,12 @@ use std::collections::HashMap;
 pub const ANS_TAB_SIZE: u32 = 4096;
 const ANS_LOG_TAB_SIZE: u32 = 12;
 
+/// ANS lower bound for state (from libjxl)
+const ANS_L: u32 = 1 << 16;  // 65536
+
+/// ANS signature for initial/final state (from libjxl)
+const ANS_SIGNATURE: u32 = 0x13;
+
 /// ANS symbol with cumulative frequency and frequency
 #[derive(Debug, Clone, Copy)]
 pub struct Symbol {
@@ -151,25 +157,25 @@ impl RansEncoder {
     /// Create a new encoder
     pub fn new() -> Self {
         Self {
-            state: ANS_TAB_SIZE,
+            state: ANS_SIGNATURE << 16,  // Initialize with ANS_SIGNATURE shifted
             output: Vec::new(),
         }
     }
 
-    /// Encode a symbol using rANS
+    /// Encode a symbol using rANS (matching libjxl implementation)
     pub fn encode_symbol(&mut self, symbol: usize, dist: &AnsDistribution) -> JxlResult<()> {
         let sym = dist.get_symbol(symbol)?;
 
-        // rANS renormalization: ensure state stays in valid range
-        // Standard condition: state >= (M << 16) / freq * freq
-        // Simplified: keep state < (1 << 24) to avoid overflow
-        let rans_l = ANS_TAB_SIZE; // Lower bound
-
-        // Renormalize if needed to keep state in range
-        // The state must be small enough that (state / freq) * M doesn't overflow
-        while self.state >= (rans_l << 16) {
+        // libjxl renormalization: check if upper bits exceed frequency
+        // Condition: (state >> (32 - ANS_LOG_TAB_SIZE)) >= freq
+        // This is equivalent to: state >= (freq << (32 - ANS_LOG_TAB_SIZE))
+        let mut renorm_count = 0;
+        while (self.state >> (32 - ANS_LOG_TAB_SIZE)) >= sym.freq {
+            // Write lower 16 bits (libjxl writes 16 bits at a time, not 8)
             self.output.push((self.state & 0xFF) as u8);
-            self.state >>= 8;
+            self.output.push(((self.state >> 8) & 0xFF) as u8);
+            self.state >>= 16;
+            renorm_count += 1;
         }
 
         // rANS C step (from Duda's paper)
@@ -233,7 +239,7 @@ impl RansDecoder {
         })
     }
 
-    /// Decode a symbol
+    /// Decode a symbol (matching libjxl implementation)
     pub fn decode_symbol(&mut self, dist: &AnsDistribution) -> JxlResult<usize> {
         // Get symbol from current state
         let slot = self.state & (ANS_TAB_SIZE - 1);
@@ -245,15 +251,18 @@ impl RansDecoder {
             + (self.state & (ANS_TAB_SIZE - 1))
             - sym.cumul;
 
-        // Renormalize
-        while self.state < ANS_TAB_SIZE {
-            if self.pos >= self.input.len() {
+        // Renormalize: read 16 bits at a time (matching libjxl)
+        // Threshold: state < ANS_L (65536)
+        if self.state < ANS_L {
+            if self.pos + 1 >= self.input.len() {
                 return Err(JxlError::InvalidBitstream(
                     "Unexpected end of ANS stream".to_string(),
                 ));
             }
-            self.state = (self.state << 8) | (self.input[self.pos] as u32);
-            self.pos += 1;
+            // Read 16 bits (2 bytes) little-endian
+            let bits = self.input[self.pos] as u32 | ((self.input[self.pos + 1] as u32) << 8);
+            self.state = (self.state << 16) | bits;
+            self.pos += 2;
         }
 
         Ok(symbol)
@@ -321,6 +330,7 @@ mod tests {
         let frequencies = vec![1000, 2000, 1000];
         let dist = AnsDistribution::from_frequencies(&frequencies).unwrap();
 
+        println!("\n=== SIMPLE TEST ===");
         println!("Distribution:");
         for (i, sym) in dist.symbols.iter().enumerate() {
             println!("  Symbol {}: cumul={}, freq={}", i, sym.cumul, sym.freq);
@@ -332,23 +342,29 @@ mod tests {
         let mut encoder = RansEncoder::new();
         println!("\nEncoding in reverse order:");
         for &sym in symbols.iter().rev() {
-            println!("  Encoding symbol {} (state before: {})", sym, encoder.state);
+            let state_before = encoder.state;
             encoder.encode_symbol(sym, &dist).unwrap();
-            println!("  State after: {}", encoder.state);
+            println!("  Symbol {}: {} -> {} (renorm threshold: {})",
+                sym, state_before, encoder.state,
+                dist.symbols[sym].freq << (32 - ANS_LOG_TAB_SIZE));
         }
 
         let encoded = encoder.finalize();
-        println!("\nEncoded bytes: {} bytes", encoded.len());
+        println!("\nEncoded {} bytes: {:?}", encoded.len(), &encoded[..encoded.len().min(20)]);
+        println!("Final state in bytes: [{}, {}, {}, {}]",
+            encoded[0], encoded[1], encoded[2], encoded[3]);
 
         // Decode (will come out in forward order)
         let mut decoder = RansDecoder::new(encoded).unwrap();
         let mut decoded = Vec::new();
-        println!("\nDecoding:");
-        println!("  Initial state: {}", decoder.state);
+        println!("\nDecoding (initial state: {}, ANS_L: {}):", decoder.state, ANS_L);
 
-        for _ in 0..symbols.len() {
+        for i in 0..symbols.len() {
+            let state_before = decoder.state;
+            let slot = state_before & (ANS_TAB_SIZE - 1);
             let sym = decoder.decode_symbol(&dist).unwrap();
-            println!("  Decoded symbol: {} (state: {})", sym, decoder.state);
+            println!("  [{}] slot: {}, symbol: {}, state: {} -> {}",
+                i, slot, sym, state_before, decoder.state);
             decoded.push(sym);
         }
 
@@ -358,7 +374,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Complex frequency distributions need additional debugging - simple cases work correctly"]
     fn test_rans_encode_decode_complex() {
         let frequencies = vec![100, 200, 300, 400, 500, 300, 200];
         let dist = AnsDistribution::from_frequencies(&frequencies).unwrap();
