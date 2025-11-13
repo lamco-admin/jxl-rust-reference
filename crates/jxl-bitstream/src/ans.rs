@@ -180,8 +180,10 @@ impl RansEncoder {
 
         // Renormalize: keep state in range [freq*L, freq*L*256)
         // This ensures we have enough precision after encoding
-        let max_state = sym.freq * (ANS_TAB_SIZE << 8);
-        while self.state >= max_state {
+        // CRITICAL: Use u64 to prevent overflow! sym.freq can be up to ANS_TAB_SIZE (4096)
+        // and (ANS_TAB_SIZE << 8) = 1,048,576, so max can exceed u32::MAX
+        let max_state = (sym.freq as u64) * ((ANS_TAB_SIZE << 8) as u64);
+        while (self.state as u64) >= max_state {
             self.output.push((self.state & 0xFF) as u8);
             self.state >>= 8;
         }
