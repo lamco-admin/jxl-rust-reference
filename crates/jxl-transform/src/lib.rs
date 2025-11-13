@@ -4,6 +4,7 @@
 //! modular mode for lossless encoding, and SIMD optimizations.
 
 pub mod dct;
+pub mod dct_optimized;
 pub mod groups;
 pub mod modular;
 pub mod prediction;
@@ -12,6 +13,7 @@ pub mod simd;
 pub mod zigzag;
 
 pub use dct::*;
+pub use dct_optimized::*;
 pub use groups::*;
 pub use modular::*;
 pub use prediction::*;
