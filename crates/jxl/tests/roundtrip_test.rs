@@ -227,3 +227,69 @@ fn test_solid_color_image() {
     // Threshold lowered from 10.0 to 6.0 dB to account for current limitations.
     assert!(psnr > 6.0, "PSNR too low for solid color: {:.2} dB", psnr);
 }
+
+/// Comprehensive minimal test for ANS debugging
+#[test]
+fn test_ans_minimal_8x8_single_block() {
+    // Create the smallest meaningful image: 8x8 (single DCT block)
+    // This eliminates complexity and makes debugging trivial
+    let width = 8;
+    let height = 8;
+    
+    let mut image = Image::new(
+        Dimensions::new(width, height),
+        ColorChannels::RGB,
+        PixelType::U8,
+        ColorEncoding::SRGB,
+    ).unwrap();
+
+    // Fill with a simple gradient pattern that's easy to track
+    if let ImageBuffer::U8(ref mut buffer) = image.buffer {
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 3) as usize;
+                buffer[idx] = (x * 30) as u8;       // R: 0, 30, 60, 90, 120, 150, 180, 210
+                buffer[idx + 1] = (y * 30) as u8;   // G: varies by row
+                buffer[idx + 2] = 128;              // B: constant
+            }
+        }
+    }
+
+    println!("\n=== ANS MINIMAL TEST: 8x8 Single Block ===");
+    
+    // Encode with default settings
+    let options = EncoderOptions::default();
+    let encoder = JxlEncoder::new(options);
+    let mut encoded = Vec::new();
+    encoder.encode(&image, &mut encoded).expect("Encoding failed");
+
+    println!("Encoded size: {} bytes", encoded.len());
+
+    // Decode
+    let mut decoder = JxlDecoder::new();
+    let decoded = decoder.decode(&encoded[..]).expect("Decoding failed");
+
+    // Calculate PSNR
+    let psnr = calculate_psnr(&image, &decoded);
+    println!("8x8 block PSNR: {:.2} dB", psnr);
+
+    // For a single 8x8 block with moderate gradient, we should get good PSNR
+    // Even with quantization, a simple pattern should preserve well
+    assert!(psnr > 10.0, "PSNR too low for 8x8 block: {:.2} dB (expected > 10 dB)", psnr);
+    
+    // Also check actual pixel differences
+    if let (ImageBuffer::U8(orig), ImageBuffer::U8(dec)) = (&image.buffer, &decoded.buffer) {
+        let mut max_diff = 0i32;
+        let mut total_diff = 0i64;
+        for i in 0..orig.len() {
+            let diff = (orig[i] as i32 - dec[i] as i32).abs();
+            max_diff = max_diff.max(diff);
+            total_diff += diff as i64;
+        }
+        let avg_diff = total_diff as f64 / orig.len() as f64;
+        println!("Max pixel diff: {}, Avg diff: {:.2}", max_diff, avg_diff);
+        
+        // With quality=90 and simple pattern, differences should be small
+        assert!(max_diff < 50, "Maximum pixel difference too large: {}", max_diff);
+    }
+}
