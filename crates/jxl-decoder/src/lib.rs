@@ -5,7 +5,7 @@ pub mod progressive;
 use jxl_bitstream::{AnsDistribution, RansDecoder, BitReader};
 use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
 use jxl_core::*;
-use jxl_headers::{Container, JxlHeader};
+use jxl_headers::{Container, JxlHeader, JxlImageMetadata, CODESTREAM_SIGNATURE};
 use jxl_transform::{
     dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, merge_dc_ac,
     BLOCK_SIZE,
@@ -53,21 +53,48 @@ impl JxlDecoder {
         // Step 3: Parse header from codestream
         let mut bit_reader = BitReader::new(Cursor::new(&codestream));
 
-        // Parse header
-        let header = JxlHeader::parse(&mut bit_reader)?;
+        // Read and verify signature (JPEG XL spec Section 3.1)
+        let sig0 = bit_reader.read_bits(8)? as u8;
+        let sig1 = bit_reader.read_bits(8)? as u8;
+        if sig0 != CODESTREAM_SIGNATURE[0] || sig1 != CODESTREAM_SIGNATURE[1] {
+            return Err(JxlError::InvalidSignature);
+        }
+
+        // Parse spec-compliant metadata
+        let metadata = JxlImageMetadata::decode(&mut bit_reader)?;
+
+        // Extract dimensions from metadata
+        let dimensions = if metadata.have_intrinsic_size {
+            Dimensions::new(metadata.intrinsic_width, metadata.intrinsic_height)
+        } else {
+            return Err(JxlError::InvalidHeader("Missing image dimensions".to_string()));
+        };
+
+        // Create legacy header for compatibility
+        let header = JxlHeader {
+            version: 0,
+            dimensions,
+            bit_depth: metadata.bit_depth.bits_per_sample as u8,
+            num_channels: 3 + metadata.num_extra_channels as usize,
+            color_encoding: metadata.color_encoding,
+            orientation: metadata.orientation,
+            is_animation: metadata.have_animation,
+            have_preview: metadata.have_preview,
+        };
         self.header = Some(header.clone());
 
         // Determine pixel type based on bit depth
-        let pixel_type = if header.bit_depth <= 8 {
+        let pixel_type = if metadata.bit_depth.bits_per_sample <= 8 {
             PixelType::U8
-        } else if header.bit_depth <= 16 {
+        } else if metadata.bit_depth.bits_per_sample <= 16 {
             PixelType::U16
         } else {
             PixelType::F32
         };
 
         // Determine channels
-        let channels = match header.num_channels {
+        let num_channels = 3 + metadata.num_extra_channels as usize;
+        let channels = match num_channels {
             1 => ColorChannels::Gray,
             2 => ColorChannels::GrayAlpha,
             3 => ColorChannels::RGB,
@@ -75,17 +102,17 @@ impl JxlDecoder {
             _ => {
                 return Err(JxlError::UnsupportedFeature(format!(
                     "{} channels not supported",
-                    header.num_channels
+                    num_channels
                 )))
             }
         };
 
         // Create image buffer
         let mut image = Image::new(
-            header.dimensions,
+            dimensions,
             channels,
             pixel_type,
-            header.color_encoding,
+            metadata.color_encoding,
         )?;
 
         // Decode frame data
