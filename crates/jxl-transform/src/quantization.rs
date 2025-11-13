@@ -124,10 +124,36 @@ pub fn quantize(coeffs: &[f32; 64], quant_table: &QuantTable, output: &mut [i16;
     }
 }
 
+/// Quantize with adaptive scaling factor
+pub fn quantize_adaptive(
+    coeffs: &[f32; 64],
+    quant_table: &QuantTable,
+    scale_factor: f32,
+    output: &mut [i16; 64],
+) {
+    for i in 0..64 {
+        let q = (quant_table[i] as f32) * scale_factor;
+        output[i] = (coeffs[i] / q).round() as i16;
+    }
+}
+
 /// Dequantize DCT coefficients
 pub fn dequantize(coeffs: &[i16; 64], quant_table: &QuantTable, output: &mut [f32; 64]) {
     for i in 0..64 {
         let q = quant_table[i] as f32;
+        output[i] = coeffs[i] as f32 * q;
+    }
+}
+
+/// Dequantize with adaptive scaling factor
+pub fn dequantize_adaptive(
+    coeffs: &[i16; 64],
+    quant_table: &QuantTable,
+    scale_factor: f32,
+    output: &mut [f32; 64],
+) {
+    for i in 0..64 {
+        let q = (quant_table[i] as f32) * scale_factor;
         output[i] = coeffs[i] as f32 * q;
     }
 }
@@ -164,6 +190,218 @@ pub fn quantize_channel(
                     output[(block_y + y) * width + (block_x + x)] = quant_block[y * BLOCK_SIZE + x];
                 }
             }
+        }
+    }
+}
+
+/// Quantize a channel with adaptive per-block scaling
+pub fn quantize_channel_adaptive(
+    dct_coeffs: &[f32],
+    width: usize,
+    height: usize,
+    quant_table: &QuantTable,
+    scale_map: &[f32],
+    output: &mut Vec<i16>,
+) {
+    output.clear();
+    output.resize(width * height, 0);
+
+    let mut block = [0.0f32; 64];
+    let mut quant_block = [0i16; 64];
+
+    let blocks_x = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    for block_idx_y in 0..(height + BLOCK_SIZE - 1) / BLOCK_SIZE {
+        for block_idx_x in 0..blocks_x {
+            let block_y = block_idx_y * BLOCK_SIZE;
+            let block_x = block_idx_x * BLOCK_SIZE;
+
+            // Get adaptive scale for this block
+            let block_idx = block_idx_y * blocks_x + block_idx_x;
+            let scale = scale_map[block_idx];
+
+            // Extract block
+            for y in 0..BLOCK_SIZE.min(height - block_y) {
+                for x in 0..BLOCK_SIZE.min(width - block_x) {
+                    block[y * BLOCK_SIZE + x] = dct_coeffs[(block_y + y) * width + (block_x + x)];
+                }
+            }
+
+            // Quantize with adaptive scaling
+            quantize_adaptive(&block, quant_table, scale, &mut quant_block);
+
+            // Store
+            for y in 0..BLOCK_SIZE.min(height - block_y) {
+                for x in 0..BLOCK_SIZE.min(width - block_x) {
+                    output[(block_y + y) * width + (block_x + x)] = quant_block[y * BLOCK_SIZE + x];
+                }
+            }
+        }
+    }
+}
+
+/// Compute block complexity (AC energy) for adaptive quantization
+///
+/// Returns the RMS of AC coefficients, which indicates block detail/complexity.
+/// Higher values = more detail = needs finer quantization.
+pub fn compute_block_complexity(dct_block: &[f32; 64]) -> f32 {
+    // Sum of squared AC coefficients (skip DC at index 0)
+    let mut sum_sq = 0.0;
+    for i in 1..64 {
+        sum_sq += dct_block[i] * dct_block[i];
+    }
+
+    // RMS of AC coefficients
+    (sum_sq / 63.0).sqrt()
+}
+
+/// Generate adaptive quantization scale map for all blocks
+///
+/// This implements perceptual adaptive quantization:
+/// - Complex blocks (high AC energy) get finer quantization (scale < 1.0)
+/// - Flat blocks (low AC energy) get coarser quantization (scale > 1.0)
+/// - Average scaling is normalized to maintain target compression
+///
+/// # Arguments
+/// * `dct_coeffs` - DCT coefficients for the entire channel
+/// * `width` - Image width in pixels (must be multiple of BLOCK_SIZE)
+/// * `height` - Image height in pixels (must be multiple of BLOCK_SIZE)
+/// * `strength` - Adaptation strength (0.0 = no adaptation, 1.0 = full adaptation)
+///
+/// # Returns
+/// Vector of scale factors, one per block, in raster order
+pub fn generate_adaptive_quant_map(
+    dct_coeffs: &[f32],
+    width: usize,
+    height: usize,
+    strength: f32,
+) -> Vec<f32> {
+    let blocks_x = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let blocks_y = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let num_blocks = blocks_x * blocks_y;
+
+    let mut complexities = Vec::with_capacity(num_blocks);
+    let mut block = [0.0f32; 64];
+
+    // Compute complexity for each block
+    for block_idx_y in 0..blocks_y {
+        for block_idx_x in 0..blocks_x {
+            let block_y = block_idx_y * BLOCK_SIZE;
+            let block_x = block_idx_x * BLOCK_SIZE;
+
+            // Extract block
+            for y in 0..BLOCK_SIZE {
+                for x in 0..BLOCK_SIZE {
+                    if block_y + y < height && block_x + x < width {
+                        block[y * BLOCK_SIZE + x] = dct_coeffs[(block_y + y) * width + (block_x + x)];
+                    } else {
+                        block[y * BLOCK_SIZE + x] = 0.0;
+                    }
+                }
+            }
+
+            let complexity = compute_block_complexity(&block);
+            complexities.push(complexity);
+        }
+    }
+
+    // Compute statistics for normalization
+    let mean_complexity: f32 = complexities.iter().sum::<f32>() / num_blocks as f32;
+    let mean_complexity = mean_complexity.max(1.0); // Avoid division by zero
+
+    // Generate scale factors with perceptual weighting
+    let mut scales = Vec::with_capacity(num_blocks);
+    for &complexity in &complexities {
+        // Relative complexity (1.0 = average complexity)
+        let rel_complexity = complexity / mean_complexity;
+
+        // Adaptive scaling:
+        // - High complexity (rel > 1.0): scale < 1.0 (finer quantization)
+        // - Low complexity (rel < 1.0): scale > 1.0 (coarser quantization)
+        // Using power function for smooth perceptual adaptation
+        let base_scale = if rel_complexity > 0.0 {
+            rel_complexity.powf(-0.5) // Square root inverse
+        } else {
+            1.0
+        };
+
+        // Blend with strength parameter (0.0 = no adaptation, 1.0 = full adaptation)
+        let scale = 1.0 + strength * (base_scale - 1.0);
+
+        // Clamp to reasonable range [0.5, 2.0]
+        let scale = scale.clamp(0.5, 2.0);
+
+        scales.push(scale);
+    }
+
+    // Normalize scales to maintain average = 1.0 (preserves target bitrate)
+    let mean_scale: f32 = scales.iter().sum::<f32>() / num_blocks as f32;
+    if mean_scale > 0.0 {
+        for scale in &mut scales {
+            *scale /= mean_scale;
+        }
+    }
+
+    scales
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_block_complexity_flat() {
+        // Flat block (only DC)
+        let mut block = [0.0f32; 64];
+        block[0] = 100.0; // DC coefficient
+
+        let complexity = compute_block_complexity(&block);
+        assert!(complexity < 0.01); // Should be near zero
+    }
+
+    #[test]
+    fn test_block_complexity_detailed() {
+        // Detailed block (strong AC coefficients)
+        let mut block = [0.0f32; 64];
+        block[0] = 100.0; // DC
+        for i in 1..64 {
+            block[i] = 10.0; // Strong AC
+        }
+
+        let complexity = compute_block_complexity(&block);
+        assert!(complexity > 5.0); // Should be significant
+    }
+
+    #[test]
+    fn test_adaptive_quant_map_normalization() {
+        // Create dummy DCT coefficients (4x4 blocks = 32x32 pixels)
+        let width = 32;
+        let height = 32;
+        let dct_coeffs = vec![1.0f32; width * height];
+
+        let scales = generate_adaptive_quant_map(&dct_coeffs, width, height, 1.0);
+
+        // Should have one scale per block
+        let blocks_x = width / BLOCK_SIZE;
+        let blocks_y = height / BLOCK_SIZE;
+        assert_eq!(scales.len(), blocks_x * blocks_y);
+
+        // Mean scale should be approximately 1.0 (normalized)
+        let mean_scale: f32 = scales.iter().sum::<f32>() / scales.len() as f32;
+        assert!((mean_scale - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_adaptive_quant_strength_zero() {
+        // With strength = 0, all scales should be 1.0 (no adaptation)
+        let width = 16;
+        let height = 16;
+        let dct_coeffs = vec![1.0f32; width * height];
+
+        let scales = generate_adaptive_quant_map(&dct_coeffs, width, height, 0.0);
+
+        for scale in scales {
+            assert!((scale - 1.0).abs() < 0.01);
         }
     }
 }

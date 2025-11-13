@@ -5,7 +5,8 @@ use jxl_color::{rgb_to_xyb, srgb_u8_to_linear_f32};
 use jxl_core::*;
 use jxl_headers::Container;
 use jxl_transform::{
-    dct_channel, generate_xyb_quant_tables, quantize_channel, separate_dc_ac, zigzag_scan_channel,
+    dct_channel, generate_adaptive_quant_map, generate_xyb_quant_tables, quantize_channel,
+    quantize_channel_adaptive, separate_dc_ac, zigzag_scan_channel,
 };
 use rayon::prelude::*;
 use std::fs::File;
@@ -23,6 +24,8 @@ pub struct EncoderOptions {
     pub lossless: bool,
     /// Target bits per pixel (for lossy)
     pub target_bpp: Option<f32>,
+    /// Adaptive quantization strength (0.0-1.0, 0.0 = disabled)
+    pub adaptive_quant_strength: f32,
 }
 
 impl Default for EncoderOptions {
@@ -32,6 +35,7 @@ impl Default for EncoderOptions {
             effort: consts::DEFAULT_EFFORT,
             lossless: false,
             target_bpp: None,
+            adaptive_quant_strength: 0.7, // Default: moderate adaptive quantization
         }
     }
 }
@@ -53,6 +57,11 @@ impl EncoderOptions {
 
     pub fn lossless(mut self, lossless: bool) -> Self {
         self.lossless = lossless;
+        self
+    }
+
+    pub fn adaptive_quant(mut self, strength: f32) -> Self {
+        self.adaptive_quant_strength = strength.clamp(0.0, 1.0);
         self
     }
 }
@@ -186,20 +195,55 @@ impl JxlEncoder {
             })
             .collect();
 
-        // Step 4: Quantize coefficients with XYB-tuned tables (parallel)
+        // Step 4: Quantize coefficients with XYB-tuned tables and adaptive quantization (parallel)
         // Use per-channel quantization for optimal perceptual quality
         let xyb_tables = generate_xyb_quant_tables(self.options.quality);
         let quant_tables = [&xyb_tables.x_table, &xyb_tables.y_table, &xyb_tables.b_table];
 
-        let quantized: Vec<Vec<i16>> = dct_coeffs
-            .par_iter()
-            .zip(quant_tables.par_iter())
-            .map(|(dct_coeff, quant_table)| {
-                let mut quantized_channel = Vec::new();
-                quantize_channel(dct_coeff, width, height, quant_table, &mut quantized_channel);
-                quantized_channel
-            })
-            .collect();
+        let quantized: Vec<Vec<i16>> = if self.options.adaptive_quant_strength > 0.0 {
+            // Generate adaptive quantization maps for each channel (parallel)
+            let quant_maps: Vec<Vec<f32>> = dct_coeffs
+                .par_iter()
+                .map(|dct_coeff| {
+                    generate_adaptive_quant_map(
+                        dct_coeff,
+                        width,
+                        height,
+                        self.options.adaptive_quant_strength,
+                    )
+                })
+                .collect();
+
+            // Quantize with adaptive scaling
+            dct_coeffs
+                .par_iter()
+                .zip(quant_tables.par_iter())
+                .zip(quant_maps.par_iter())
+                .map(|((dct_coeff, quant_table), scale_map)| {
+                    let mut quantized_channel = Vec::new();
+                    quantize_channel_adaptive(
+                        dct_coeff,
+                        width,
+                        height,
+                        quant_table,
+                        scale_map,
+                        &mut quantized_channel,
+                    );
+                    quantized_channel
+                })
+                .collect()
+        } else {
+            // Standard quantization (no adaptation)
+            dct_coeffs
+                .par_iter()
+                .zip(quant_tables.par_iter())
+                .map(|(dct_coeff, quant_table)| {
+                    let mut quantized_channel = Vec::new();
+                    quantize_channel(dct_coeff, width, height, quant_table, &mut quantized_channel);
+                    quantized_channel
+                })
+                .collect()
+        };
 
         // Step 5: Encode quantized coefficients using simplified ANS
         self.encode_coefficients(&quantized, width, height, writer)?;
