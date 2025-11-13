@@ -169,13 +169,11 @@ impl RansEncoder {
         // libjxl renormalization: check if upper bits exceed frequency
         // Condition: (state >> (32 - ANS_LOG_TAB_SIZE)) >= freq
         // This is equivalent to: state >= (freq << (32 - ANS_LOG_TAB_SIZE))
-        let mut renorm_count = 0;
         while (self.state >> (32 - ANS_LOG_TAB_SIZE)) >= sym.freq {
             // Write lower 16 bits (libjxl writes 16 bits at a time, not 8)
             self.output.push((self.state & 0xFF) as u8);
             self.output.push(((self.state >> 8) & 0xFF) as u8);
             self.state >>= 16;
-            renorm_count += 1;
         }
 
         // rANS C step (from Duda's paper)
@@ -190,15 +188,23 @@ impl RansEncoder {
     /// Finalize encoding
     pub fn finalize(mut self) -> Vec<u8> {
         // Reverse renormalization bytes for decoding (LIFO order)
-        self.output.reverse();
+        // CRITICAL: Reverse in 16-bit chunks, not byte-by-byte!
+        // We write 16 bits (2 bytes) at a time, so reverse in pairs
+        assert!(self.output.len() % 2 == 0, "Output should be even number of bytes");
+
+        let mut reversed = Vec::with_capacity(self.output.len());
+        for chunk in self.output.chunks_exact(2).rev() {
+            reversed.push(chunk[0]);
+            reversed.push(chunk[1]);
+        }
 
         // Prepend final state (4 bytes, little-endian)
-        let mut result = Vec::with_capacity(self.output.len() + 4);
+        let mut result = Vec::with_capacity(reversed.len() + 4);
         result.push((self.state & 0xFF) as u8);
         result.push(((self.state >> 8) & 0xFF) as u8);
         result.push(((self.state >> 16) & 0xFF) as u8);
         result.push(((self.state >> 24) & 0xFF) as u8);
-        result.extend_from_slice(&self.output);
+        result.extend_from_slice(&reversed);
 
         result
     }
@@ -422,5 +428,56 @@ mod tests {
 
         assert!(dist.alphabet_size > 0);
         assert_eq!(dist.total_freq(), ANS_TAB_SIZE);
+    }
+
+    #[test]
+    fn test_rans_minimal_renorm() {
+        // Minimal test: 2 symbols, force renormalization
+        println!("\n=== MINIMAL RENORM TEST ===");
+
+        // Use low frequency to force renormalization quickly
+        let frequencies = vec![3896, 200];  // Symbol 1 has low freq = 200
+        let dist = AnsDistribution::from_frequencies(&frequencies).unwrap();
+
+        println!("Distribution:");
+        for (i, sym) in dist.symbols.iter().enumerate() {
+            println!("  Symbol {}: cumul={}, freq={}", i, sym.cumul, sym.freq);
+        }
+
+        // Encode many symbols to force state buildup and renormalization
+        let symbols = vec![1; 50];  // 50 high-frequency symbols
+
+        let mut encoder = RansEncoder::new();
+        println!("\nEncoding (initial state: {}):", encoder.state);
+        for &sym in symbols.iter().rev() {
+            let state_before = encoder.state;
+            let threshold = dist.symbols[sym].freq << (32 - ANS_LOG_TAB_SIZE);
+            let will_renorm = (state_before >> (32 - ANS_LOG_TAB_SIZE)) >= dist.symbols[sym].freq;
+            encoder.encode_symbol(sym, &dist).unwrap();
+            println!("  Symbol {}: state {} -> {} (threshold: {}, renorm: {})",
+                sym, state_before, encoder.state, threshold, will_renorm);
+        }
+
+        let encoded = encoder.finalize();
+        println!("\nEncoded {} bytes: {:?}", encoded.len(), encoded);
+
+        // Decode
+        let mut decoder = RansDecoder::new(encoded).unwrap();
+        let mut decoded = Vec::new();
+        println!("\nDecoding (initial state: {}):", decoder.state);
+
+        for i in 0..symbols.len() {
+            let state_before = decoder.state;
+            let slot = state_before & (ANS_TAB_SIZE - 1);
+            let sym = decoder.decode_symbol(&dist).unwrap();
+            let did_renorm = decoder.state > state_before; // State increased = renorm happened
+            println!("  [{}] slot: {}, symbol: {}, state: {} -> {} (renorm: {})",
+                i, slot, sym, state_before, decoder.state, did_renorm);
+            decoded.push(sym);
+        }
+
+        println!("\nExpected: {:?}", symbols);
+        println!("Got:      {:?}", decoded);
+        assert_eq!(symbols, decoded);
     }
 }
