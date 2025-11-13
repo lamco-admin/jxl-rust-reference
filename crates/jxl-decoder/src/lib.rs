@@ -310,16 +310,27 @@ impl JxlDecoder {
 
         // Decode values with ANS
         let mut decoder = RansDecoder::new(ans_data)?;
+        let mut decoded_values = Vec::new();
+        let mut decoded_symbols = Vec::new();
         for &pos in &positions {
             // CRITICAL: Always decode the symbol to keep ANS stream in sync!
             // The encoder encoded ALL non-zero coefficients, so we must decode ALL of them
             // even if the position is out of bounds (which would indicate a bug elsewhere)
             let symbol = decoder.decode_symbol(dist)?;
+            let coeff = self.symbol_to_coeff(symbol as u32);
+            decoded_symbols.push(symbol as u32);
+            decoded_values.push(coeff);
 
             if pos < ac_coeffs.len() {
-                ac_coeffs[pos] = self.symbol_to_coeff(symbol as u32);
+                ac_coeffs[pos] = coeff;
             }
             // else: position out of bounds - symbol decoded but discarded (keeps stream in sync)
+        }
+
+        // DEBUG: Print first few AC coefficients AND symbols
+        if !decoded_values.is_empty() && decoded_values.len() >= 10 {
+            eprintln!("DEBUG AC decode: first 10 coeffs = {:?}", &decoded_values[0..10]);
+            eprintln!("DEBUG AC decode: first 10 symbols = {:?}", &decoded_symbols[0..10]);
         }
 
         Ok(ac_coeffs)
