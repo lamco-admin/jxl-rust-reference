@@ -43,4 +43,10 @@ pub enum JxlError {
 
     #[error("Buffer too small: expected {expected}, got {actual}")]
     BufferTooSmall { expected: usize, actual: usize },
+
+    #[error("Invalid bit depth configuration")]
+    InvalidBitDepth,
+
+    #[error("Invalid extra channel type")]
+    InvalidExtraChannel,
 }
