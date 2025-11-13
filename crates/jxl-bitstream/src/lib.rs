@@ -8,6 +8,6 @@ pub mod bitreader;
 pub mod bitwriter;
 pub mod huffman;
 
-pub use ans::{AnsDecoder, AnsEncoder};
+pub use ans::{build_distribution, AnsDistribution, RansDecoder, RansEncoder, Symbol};
 pub use bitreader::BitReader;
 pub use bitwriter::BitWriter;
