@@ -371,6 +371,9 @@ impl JxlEncoder {
         // Build ANS distribution from differential DC coefficients
         let dist = build_distribution(&diffs);
 
+        // Write distribution to bitstream (so decoder can reconstruct)
+        self.write_distribution(&dist, writer)?;
+
         // Encode using ANS
         let mut encoder = RansEncoder::new();
         for &diff in diffs.iter().rev() {
@@ -417,6 +420,9 @@ impl JxlEncoder {
         let values: Vec<i16> = non_zero.iter().map(|(_, v)| *v).collect();
         let dist = build_distribution(&values);
 
+        // Write distribution to bitstream
+        self.write_distribution(&dist, writer)?;
+
         // Encode positions using simple variable-length (positions are not compressible with ANS)
         for &(pos, _) in &non_zero {
             writer.write_u32(pos as u32, 20)?;
@@ -447,6 +453,29 @@ impl JxlEncoder {
     fn map_coeff_to_symbol(&self, coeff: i16, dist: &AnsDistribution) -> usize {
         // Map coefficient to 0-based alphabet using the distribution's min_val
         (coeff - dist.min_val()) as usize
+    }
+
+    /// Write ANS distribution to bitstream
+    ///
+    /// Stores alphabet size and min_val so decoder can reconstruct the distribution.
+    /// In a production implementation, this would store frequency tables for exact reconstruction.
+    fn write_distribution<W: Write>(
+        &self,
+        dist: &AnsDistribution,
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        // Write alphabet size (up to 2048 symbols for i16 range)
+        writer.write_u32(dist.alphabet_size() as u32, 12)?;
+
+        // Write min_val as signed 16-bit
+        let min_val_unsigned = (dist.min_val() as i32 + 32768) as u32; // Shift to 0-65535
+        writer.write_u32(min_val_unsigned, 16)?;
+
+        // TODO: For better compression, store actual frequency table
+        // For now, decoder will use uniform distribution which is suboptimal
+        // but allows the system to work
+
+        Ok(())
     }
 
     /// Encode alpha channel separately

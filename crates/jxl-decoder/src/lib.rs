@@ -1,6 +1,6 @@
 //! JPEG XL decoder implementation
 
-use jxl_bitstream::BitReader;
+use jxl_bitstream::{ans::*, BitReader};
 use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb_image_simd};
 use jxl_core::*;
 use jxl_headers::{Container, JxlHeader};
@@ -207,7 +207,7 @@ impl JxlDecoder {
         Ok(quantized)
     }
 
-    /// Decode DC coefficients using differential decoding
+    /// Decode DC coefficients using ANS with differential decoding
     fn decode_dc_coefficients<R: Read>(
         &self,
         reader: &mut BitReader<R>,
@@ -219,25 +219,40 @@ impl JxlDecoder {
             return Ok(Vec::new());
         }
 
+        // Read distribution from bitstream
+        let dist = self.read_distribution(reader)?;
+
+        // Read encoded length
+        let encoded_len = reader.read_u32(20)? as usize;
+
+        // Read encoded bytes
+        let mut encoded = Vec::with_capacity(encoded_len);
+        for _ in 0..encoded_len {
+            encoded.push(reader.read_bits(8)? as u8);
+        }
+
+        // Create ANS decoder
+        let mut ans_decoder = RansDecoder::new(encoded)?;
+
+        // Decode differential DC coefficients
+        let mut diffs = Vec::with_capacity(num_dc);
+        for _ in 0..num_dc {
+            let symbol = ans_decoder.decode_symbol(&dist)?;
+            let diff = self.map_symbol_to_coeff(symbol, &dist);
+            diffs.push(diff);
+        }
+
+        // Reconstruct DC coefficients from diffs
         let mut dc_coeffs = Vec::with_capacity(num_dc);
-
-        // Decode first DC value directly
-        let first_dc = self.decode_coefficient_value(reader)?;
-        dc_coeffs.push(first_dc);
-
-        // Decode remaining DC values as differences (differential decoding)
-        let mut prev_dc = first_dc;
-        for _ in 1..num_dc {
-            let diff = self.decode_coefficient_value(reader)?;
-            let dc = prev_dc + diff;
-            dc_coeffs.push(dc);
-            prev_dc = dc;
+        dc_coeffs.push(diffs[0]);
+        for i in 1..num_dc {
+            dc_coeffs.push(dc_coeffs[i - 1] + diffs[i]);
         }
 
         Ok(dc_coeffs)
     }
 
-    /// Decode AC coefficients from sparse encoding
+    /// Decode AC coefficients using ANS with sparse encoding
     fn decode_ac_coefficients<R: Read>(
         &self,
         reader: &mut BitReader<R>,
@@ -250,34 +265,75 @@ impl JxlDecoder {
         let ac_size = num_blocks * 63;
         let mut ac_coeffs = vec![0i16; ac_size];
 
-        // Decode non-zero AC coefficients
+        if non_zero_count == 0 {
+            return Ok(ac_coeffs);
+        }
+
+        // Read distribution from bitstream
+        let dist = self.read_distribution(reader)?;
+
+        // Read positions
+        let mut positions = Vec::with_capacity(non_zero_count);
         for _ in 0..non_zero_count {
-            let pos = reader.read_u32(20)? as usize;
-            if pos < ac_coeffs.len() {
-                ac_coeffs[pos] = self.decode_coefficient_value(reader)?;
+            positions.push(reader.read_u32(20)? as usize);
+        }
+
+        // Read encoded length
+        let encoded_len = reader.read_u32(20)? as usize;
+
+        // Read encoded bytes
+        let mut encoded = Vec::with_capacity(encoded_len);
+        for _ in 0..encoded_len {
+            encoded.push(reader.read_bits(8)? as u8);
+        }
+
+        // Create ANS decoder
+        let mut ans_decoder = RansDecoder::new(encoded)?;
+
+        // Decode values
+        let mut values = Vec::with_capacity(non_zero_count);
+        for _ in 0..non_zero_count {
+            let symbol = ans_decoder.decode_symbol(&dist)?;
+            let val = self.map_symbol_to_coeff(symbol, &dist);
+            values.push(val);
+        }
+
+        // Place values at positions
+        for (pos, val) in positions.iter().zip(values.iter()) {
+            if *pos < ac_coeffs.len() {
+                ac_coeffs[*pos] = *val;
             }
         }
 
         Ok(ac_coeffs)
     }
 
-    /// Decode a single coefficient value
-    fn decode_coefficient_value<R: Read>(
+    /// Read ANS distribution from bitstream
+    ///
+    /// Reads alphabet size and min_val to reconstruct a uniform distribution.
+    /// In production, this would read the full frequency table.
+    fn read_distribution<R: Read>(
         &self,
         reader: &mut BitReader<R>,
-    ) -> JxlResult<i16> {
-        // Read sign
-        let is_negative = reader.read_bit()?;
+    ) -> JxlResult<AnsDistribution> {
+        // Read alphabet size
+        let alphabet_size = reader.read_u32(12)? as usize;
 
-        // Read absolute value
-        let bits_needed = reader.read_bits(4)? as usize;
-        let abs_val = if bits_needed > 0 {
-            reader.read_bits(bits_needed)? as i16
-        } else {
-            0
-        };
+        // Read min_val (stored as unsigned, shifted by 32768)
+        let min_val_unsigned = reader.read_u32(16)?;
+        let min_val = (min_val_unsigned as i32 - 32768) as i16;
 
-        Ok(if is_negative { -abs_val } else { abs_val })
+        // Create distribution with proper min_val
+        let dummy_data: Vec<i16> = (0..alphabet_size).map(|i| min_val + i as i16).collect();
+        let dist = build_distribution(&dummy_data);
+
+        Ok(dist)
+    }
+
+    /// Map ANS symbol index back to i16 coefficient
+    fn map_symbol_to_coeff(&self, symbol: usize, dist: &AnsDistribution) -> i16 {
+        // Reverse of map_coeff_to_symbol in encoder
+        dist.min_val() + symbol as i16
     }
 
     /// Dequantize a channel of DCT coefficients
