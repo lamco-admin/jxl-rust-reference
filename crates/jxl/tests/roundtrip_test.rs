@@ -73,7 +73,16 @@ fn test_roundtrip_encode_decode() {
 
     // Verify we actually wrote some data
     assert!(!encoded_data.is_empty(), "Encoder produced no data");
+
+    let raw_size = (original.width() * original.height() * 3) as f64;
+    let compressed_size = encoded_data.len() as f64;
+    let bpp = (compressed_size * 8.0) / (original.width() * original.height()) as f64;
+    let compression_ratio = raw_size / compressed_size;
+
     println!("Encoded size: {} bytes", encoded_data.len());
+    println!("Raw size: {} bytes", raw_size as usize);
+    println!("Bits per pixel: {:.3} BPP", bpp);
+    println!("Compression ratio: {:.2}x", compression_ratio);
 
     // Decode the data
     let mut decoder = JxlDecoder::new();
