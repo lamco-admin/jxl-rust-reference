@@ -118,6 +118,7 @@ dependencies = [
  "jxl-bitstream",
  "jxl-color",
  "jxl-core",
+ "jxl-headers",
  "jxl-transform",
  "rayon",
 ]
