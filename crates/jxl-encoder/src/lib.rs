@@ -176,11 +176,20 @@ impl JxlEncoder {
         self.rgb_to_xyb_image(&linear_rgb, &mut xyb, width, height);
 
         // Step 3: Apply DCT transformation to each channel (parallel)
+        // CRITICAL: Scale XYB values to pixel range (0-255) before DCT
+        // XYB values are in ~0-1 range from linear RGB, but DCT expects larger values
+        // for proper quantization. Without scaling, all AC coefficients quantize to zero!
+        const XYB_SCALE: f32 = 255.0;
+
         // Process X, Y, and B-Y channels independently for maximum throughput
         let dct_coeffs: Vec<Vec<f32>> = (0..3)
             .into_par_iter()
             .map(|c| {
-                let channel = self.extract_channel(&xyb, width, height, c, 3);
+                let mut channel = self.extract_channel(&xyb, width, height, c, 3);
+                // Scale to pixel range before DCT
+                for val in &mut channel {
+                    *val *= XYB_SCALE;
+                }
                 let mut dct_coeff = vec![0.0; width * height];
                 dct_channel(&channel, width, height, &mut dct_coeff);
                 dct_coeff
@@ -333,6 +342,7 @@ impl JxlEncoder {
         // Build ANS distributions
         let dc_dist = self.build_distribution(&all_dc_diffs);
         let ac_dist = self.build_distribution(&all_ac_values);
+
 
         // Write distributions to bitstream
         self.write_distribution(&dc_dist, writer)?;

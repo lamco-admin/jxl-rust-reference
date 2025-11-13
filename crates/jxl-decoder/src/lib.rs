@@ -135,11 +135,19 @@ impl JxlDecoder {
             .collect();
 
         // Step 3: Apply inverse DCT (parallel)
+        // CRITICAL: Unscale after IDCT to convert back to 0-1 range
+        // Encoder scales XYB by 255 before DCT, so we must divide by 255 after IDCT
+        const XYB_SCALE: f32 = 255.0;
+
         let xyb: Vec<Vec<f32>> = dct_coeffs
             .par_iter()
             .map(|dct_coeff| {
                 let mut xyb_channel = vec![0.0; width * height];
                 idct_channel(dct_coeff, width, height, &mut xyb_channel);
+                // Unscale back to 0-1 range for XYB to RGB conversion
+                for val in &mut xyb_channel {
+                    *val /= XYB_SCALE;
+                }
                 xyb_channel
             })
             .collect();
@@ -303,10 +311,15 @@ impl JxlDecoder {
         // Decode values with ANS
         let mut decoder = RansDecoder::new(ans_data)?;
         for &pos in &positions {
+            // CRITICAL: Always decode the symbol to keep ANS stream in sync!
+            // The encoder encoded ALL non-zero coefficients, so we must decode ALL of them
+            // even if the position is out of bounds (which would indicate a bug elsewhere)
+            let symbol = decoder.decode_symbol(dist)?;
+
             if pos < ac_coeffs.len() {
-                let symbol = decoder.decode_symbol(dist)?;
                 ac_coeffs[pos] = self.symbol_to_coeff(symbol as u32);
             }
+            // else: position out of bounds - symbol decoded but discarded (keeps stream in sync)
         }
 
         Ok(ac_coeffs)
