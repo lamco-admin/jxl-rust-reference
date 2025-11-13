@@ -1,11 +1,11 @@
 //! JPEG XL encoder implementation
 
 use jxl_bitstream::BitWriter;
-use jxl_color::{rgb_to_xyb, rgb_to_xyb_image_simd, srgb_u8_to_linear_f32};
+use jxl_color::{rgb_to_xyb_image_simd, srgb_u8_to_linear_f32};
 use jxl_core::*;
 use jxl_headers::Container;
 use jxl_transform::{
-    dct_channel, dct_channel_simd, generate_adaptive_quant_map, generate_xyb_quant_tables,
+    dct_channel_simd, generate_adaptive_quant_map, generate_xyb_quant_tables,
     quantize_channel, quantize_channel_adaptive, separate_dc_ac, zigzag_scan_channel,
 };
 use rayon::prelude::*;
@@ -291,23 +291,6 @@ impl JxlEncoder {
         }
 
         Ok(linear)
-    }
-
-    /// Convert RGB to XYB for entire image
-    fn rgb_to_xyb_image(&self, rgb: &[f32], xyb: &mut [f32], width: usize, height: usize) {
-        let pixel_count = width * height;
-
-        for i in 0..pixel_count {
-            let r = rgb[i * 3];
-            let g = rgb[i * 3 + 1];
-            let b = rgb[i * 3 + 2];
-
-            let (x, y, b_minus_y) = rgb_to_xyb(r, g, b);
-
-            xyb[i * 3] = x;
-            xyb[i * 3 + 1] = y;
-            xyb[i * 3 + 2] = b_minus_y;
-        }
     }
 
     /// Extract a single channel from interleaved data
