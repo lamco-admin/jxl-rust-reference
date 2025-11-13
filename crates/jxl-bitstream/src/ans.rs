@@ -246,12 +246,12 @@ impl RansEncoder {
             )));
         }
 
-        // Renormalize: keep state in range [freq*L, freq*L*256)
-        // This ensures we have enough precision after encoding
-        // CRITICAL: Use u64 to prevent overflow! sym.freq can be up to ANS_TAB_SIZE (4096)
-        // and (ANS_TAB_SIZE << 8) = 1,048,576, so max can exceed u32::MAX
-        let max_state = (sym.freq as u64) * ((ANS_TAB_SIZE << 8) as u64);
-        while (self.state as u64) >= max_state {
+        // Renormalize BEFORE encoding to ensure state is in valid range
+        // Standard rANS threshold: ((L >> scale_bits) << 8) * freq
+        // Where L = ANS_TAB_SIZE and scale_bits = ANS_LOG_TAB_SIZE
+        // This simplifies to: 256 * freq
+        let threshold = ((ANS_TAB_SIZE >> ANS_LOG_TAB_SIZE) << 8) * sym.freq;
+        while self.state >= threshold {
             self.output.push((self.state & 0xFF) as u8);
             self.state >>= 8;
         }
@@ -275,6 +275,11 @@ impl RansEncoder {
         // Reverse entire output so decoder can read forward
         self.output.reverse();
         self.output
+    }
+
+    /// Get current state (for debugging)
+    pub fn get_state(&self) -> u32 {
+        self.state
     }
 }
 
@@ -344,6 +349,18 @@ impl RansDecoder {
     /// Check if complete
     pub fn is_complete(&self) -> bool {
         self.pos >= self.input.len()
+    }
+
+    /// Get current state (for debugging)
+    pub fn get_state(&self) -> u32 {
+        self.state
+    }
+
+    /// Peek at next symbol without advancing (for debugging)
+    pub fn peek_symbol(&self, dist: &AnsDistribution) -> JxlResult<usize> {
+        let slot = (self.state & (ANS_TAB_SIZE - 1)) as usize;
+        let symbol = dist.decode_table[slot];
+        Ok(symbol)
     }
 }
 
