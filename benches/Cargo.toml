@@ -16,6 +16,10 @@ harness = false
 name = "end_to_end"
 harness = false
 
+[[bench]]
+name = "dct_comparison"
+harness = false
+
 [dependencies]
 jxl-transform = { path = "../crates/jxl-transform" }
 jxl-color = { path = "../crates/jxl-color" }
