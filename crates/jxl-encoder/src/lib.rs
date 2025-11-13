@@ -493,12 +493,22 @@ impl JxlEncoder {
             }
         }
 
-        // Collect non-zero symbols
+        // Collect non-zero symbols and coefficients
         let mut symbols = Vec::with_capacity(non_zero_count);
-        for &coeff in ac_coeffs {
+        let mut non_zero_coeffs = Vec::with_capacity(non_zero_count);
+        let mut positions_vec = Vec::with_capacity(non_zero_count);
+        for (pos, &coeff) in ac_coeffs.iter().enumerate() {
             if coeff != 0 {
+                non_zero_coeffs.push(coeff);
+                positions_vec.push(pos);
                 symbols.push(self.coeff_to_symbol(coeff));
             }
+        }
+
+        // DEBUG: Print first few AC coefficients AND symbols
+        if non_zero_coeffs.len() >= 10 {
+            eprintln!("DEBUG AC encode: first 10 coeffs = {:?}", &non_zero_coeffs[0..10]);
+            eprintln!("DEBUG AC encode: first 10 symbols = {:?}", &symbols[0..10]);
         }
 
         // Encode values with ANS
