@@ -1,12 +1,14 @@
 //! JPEG XL header parsing and generation
 
 pub mod container;
+pub mod frame;
 
 use jxl_bitstream::BitReader;
 use jxl_core::*;
 use std::io::Read;
 
 pub use container::{Container, JxlBox, BoxType, CONTAINER_SIGNATURE, CODESTREAM_SIGNATURE};
+pub use frame::{FrameHeader, FrameType, BlendingInfo, Passes};
 
 /// JPEG XL file header
 #[derive(Debug, Clone)]
