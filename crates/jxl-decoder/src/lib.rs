@@ -1,11 +1,11 @@
 //! JPEG XL decoder implementation
 
 use jxl_bitstream::BitReader;
-use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb, xyb_to_rgb_image_simd};
+use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb_image_simd};
 use jxl_core::*;
 use jxl_headers::{Container, JxlHeader};
 use jxl_transform::{
-    dequantize, generate_xyb_quant_tables, idct_channel, idct_channel_simd,
+    dequantize, generate_xyb_quant_tables, idct_channel_simd,
     inv_zigzag_scan_channel, merge_dc_ac, BLOCK_SIZE,
 };
 use rayon::prelude::*;
@@ -313,23 +313,6 @@ impl JxlDecoder {
                     }
                 }
             }
-        }
-    }
-
-    /// Convert XYB to RGB for entire image
-    fn xyb_to_rgb_image(&self, xyb: &[Vec<f32>], rgb: &mut [f32], width: usize, height: usize) {
-        let pixel_count = width * height;
-
-        for i in 0..pixel_count {
-            let x = xyb[0][i];
-            let y = xyb[1][i];
-            let b_minus_y = xyb[2][i];
-
-            let (r, g, b) = xyb_to_rgb(x, y, b_minus_y);
-
-            rgb[i * 3] = r.clamp(0.0, 1.0);
-            rgb[i * 3 + 1] = g.clamp(0.0, 1.0);
-            rgb[i * 3 + 2] = b.clamp(0.0, 1.0);
         }
     }
 
