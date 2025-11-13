@@ -303,6 +303,7 @@ impl JxlDecoder {
 
         // Read ANS data
         let ans_data_len = reader.read_u32(20)? as usize;
+        eprintln!("DEBUG AC decode: expecting {} positions, reading {} ANS bytes", non_zero_count, ans_data_len);
         let mut ans_data = Vec::with_capacity(ans_data_len);
         for _ in 0..ans_data_len {
             ans_data.push(reader.read_bits(8)? as u8);

@@ -521,6 +521,7 @@ impl JxlEncoder {
         }
 
         let ans_data = encoder.finalize();
+        eprintln!("DEBUG AC encode: {} symbols -> {} ANS bytes", symbols.len(), ans_data.len());
         writer.write_u32(ans_data.len() as u32, 20)?;
         for &byte in &ans_data {
             writer.write_bits(byte as u64, 8)?;
