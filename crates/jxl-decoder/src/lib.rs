@@ -303,7 +303,6 @@ impl JxlDecoder {
 
         // Read ANS data
         let ans_data_len = reader.read_u32(20)? as usize;
-        eprintln!("DEBUG AC decode: expecting {} positions, reading {} ANS bytes", non_zero_count, ans_data_len);
         let mut ans_data = Vec::with_capacity(ans_data_len);
         for _ in 0..ans_data_len {
             ans_data.push(reader.read_bits(8)? as u8);
@@ -326,12 +325,6 @@ impl JxlDecoder {
                 ac_coeffs[pos] = coeff;
             }
             // else: position out of bounds - symbol decoded but discarded (keeps stream in sync)
-        }
-
-        // DEBUG: Print first few AC coefficients AND symbols
-        if !decoded_values.is_empty() && decoded_values.len() >= 10 {
-            eprintln!("DEBUG AC decode: first 10 coeffs = {:?}", &decoded_values[0..10]);
-            eprintln!("DEBUG AC decode: first 10 symbols = {:?}", &decoded_symbols[0..10]);
         }
 
         Ok(ac_coeffs)

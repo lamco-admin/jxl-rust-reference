@@ -505,12 +505,6 @@ impl JxlEncoder {
             }
         }
 
-        // DEBUG: Print first few AC coefficients AND symbols
-        if non_zero_coeffs.len() >= 10 {
-            eprintln!("DEBUG AC encode: first 10 coeffs = {:?}", &non_zero_coeffs[0..10]);
-            eprintln!("DEBUG AC encode: first 10 symbols = {:?}", &symbols[0..10]);
-        }
-
         // Encode values with ANS
         let mut encoder = RansEncoder::new();
 
@@ -521,7 +515,6 @@ impl JxlEncoder {
         }
 
         let ans_data = encoder.finalize();
-        eprintln!("DEBUG AC encode: {} symbols -> {} ANS bytes", symbols.len(), ans_data.len());
         writer.write_u32(ans_data.len() as u32, 20)?;
         for &byte in &ans_data {
             writer.write_bits(byte as u64, 8)?;
