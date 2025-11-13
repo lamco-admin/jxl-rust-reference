@@ -368,10 +368,17 @@ impl JxlEncoder {
             diffs.push(dc_coeffs[i] - dc_coeffs[i - 1]);
         }
 
-        // Build ANS distribution from differential DC coefficients
-        let dist = build_distribution(&diffs);
+        // Build ANS distribution - use uniform for now (TODO: store actual frequencies)
+        // Determine alphabet range
+        let min_val = *diffs.iter().min().unwrap_or(&0);
+        let max_val = *diffs.iter().max().unwrap_or(&0);
+        let alphabet_size = (max_val - min_val + 1).max(1) as usize;
 
-        // Write distribution to bitstream (so decoder can reconstruct)
+        // Create uniform distribution
+        let dummy_data: Vec<i16> = (0..alphabet_size).map(|i| min_val + i as i16).collect();
+        let dist = build_distribution(&dummy_data);
+
+        // Write distribution metadata to bitstream
         self.write_distribution(&dist, writer)?;
 
         // Encode using ANS
@@ -416,11 +423,17 @@ impl JxlEncoder {
             return Ok(());
         }
 
-        // Build ANS distribution from non-zero AC coefficients
+        // Build ANS distribution - use uniform for now (TODO: store actual frequencies)
         let values: Vec<i16> = non_zero.iter().map(|(_, v)| *v).collect();
-        let dist = build_distribution(&values);
+        let min_val = *values.iter().min().unwrap();
+        let max_val = *values.iter().max().unwrap();
+        let alphabet_size = (max_val - min_val + 1) as usize;
 
-        // Write distribution to bitstream
+        // Create uniform distribution
+        let dummy_data: Vec<i16> = (0..alphabet_size).map(|i| min_val + i as i16).collect();
+        let dist = build_distribution(&dummy_data);
+
+        // Write distribution metadata to bitstream
         self.write_distribution(&dist, writer)?;
 
         // Encode positions using simple variable-length (positions are not compressible with ANS)
