@@ -8,7 +8,9 @@
 pub mod correlation;
 pub mod srgb;
 pub mod xyb;
+pub mod xyb_simd;
 
 pub use correlation::*;
 pub use srgb::*;
 pub use xyb::*;
+pub use xyb_simd::*;
