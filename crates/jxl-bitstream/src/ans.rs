@@ -59,24 +59,74 @@ impl AnsDistribution {
             if freq > 0 {
                 let normalized =
                     ((freq as u64 * ANS_TAB_SIZE as u64 + total as u64 / 2) / total as u64) as u32;
-                normalized_freqs[i] = normalized.max(1); // Ensure non-zero symbols get at least 1
+                normalized_freqs[i] = normalized;
                 normalized_total += normalized_freqs[i];
             }
         }
 
-        // Second pass: adjust to exactly ANS_TAB_SIZE
-        if normalized_total != ANS_TAB_SIZE {
-            let max_idx = normalized_freqs
-                .iter()
-                .enumerate()
-                .filter(|(_, &f)| f > 0)
-                .max_by_key(|(_, &f)| f)
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+        // Second pass: ensure all non-zero symbols get at least freq=1
+        let mut zero_freq_symbols = Vec::new();
+        for (i, &freq) in normalized_freqs.iter().enumerate() {
+            if frequencies[i] > 0 && freq == 0 {
+                zero_freq_symbols.push(i);
+            }
+        }
 
+        // Assign freq=1 to zero-freq symbols and adjust total
+        for &i in &zero_freq_symbols {
+            normalized_freqs[i] = 1;
+            normalized_total += 1;
+        }
+
+        // Third pass: adjust total to exactly ANS_TAB_SIZE
+        if normalized_total != ANS_TAB_SIZE {
             let diff = normalized_total as i64 - ANS_TAB_SIZE as i64;
-            normalized_freqs[max_idx] =
-                (normalized_freqs[max_idx] as i64 - diff).max(1) as u32;
+
+            if diff > 0 {
+                // Need to reduce: subtract from high-frequency symbols
+                let mut symbols_by_freq: Vec<(usize, u32)> = normalized_freqs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &f)| f > 1) // Only symbols with freq > 1 can be reduced
+                    .map(|(i, &f)| (i, f))
+                    .collect();
+                symbols_by_freq.sort_by_key(|(_, f)| std::cmp::Reverse(*f));
+
+                let mut remaining = diff;
+                for (idx, freq) in symbols_by_freq {
+                    if remaining == 0 {
+                        break;
+                    }
+                    // Can reduce this symbol by at most (freq - 1)
+                    let reduction = (remaining as u32).min(freq - 1);
+                    normalized_freqs[idx] -= reduction;
+                    remaining -= reduction as i64;
+                }
+
+                if remaining > 0 {
+                    // Still need more reduction - take from the largest symbol even if it goes to 1
+                    let max_idx = normalized_freqs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, &f)| f > 0)
+                        .max_by_key(|(_, &f)| f)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    normalized_freqs[max_idx] =
+                        (normalized_freqs[max_idx] as i64 - remaining).max(1) as u32;
+                }
+            } else {
+                // Need to add: add to the largest symbol
+                let max_idx = normalized_freqs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &f)| f > 0)
+                    .max_by_key(|(_, &f)| f)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                normalized_freqs[max_idx] =
+                    (normalized_freqs[max_idx] as i64 - diff) as u32;
+            }
         }
 
         // Build cumulative distribution
@@ -88,15 +138,33 @@ impl AnsDistribution {
             cumul += freq;
         }
 
+        // Verify cumulative total equals ANS_TAB_SIZE
+        assert_eq!(
+            cumul, ANS_TAB_SIZE,
+            "Cumulative frequency {} != ANS_TAB_SIZE {}",
+            cumul, ANS_TAB_SIZE
+        );
+
         // Build decode table
         let mut decode_table = vec![0usize; ANS_TAB_SIZE as usize];
+        let mut slots_filled = 0usize;
         for (symbol, sym) in symbols.iter().enumerate() {
             if sym.freq > 0 {
                 for slot in sym.cumul..(sym.cumul + sym.freq) {
                     decode_table[slot as usize] = symbol;
+                    slots_filled += 1;
                 }
             }
         }
+
+        // Verify all slots are filled
+        assert_eq!(
+            slots_filled,
+            ANS_TAB_SIZE as usize,
+            "Only {} out of {} decode table slots filled",
+            slots_filled,
+            ANS_TAB_SIZE
+        );
 
         Ok(Self {
             symbols,
