@@ -8,7 +8,20 @@ publish = false
 name = "transforms"
 harness = false
 
+[[bench]]
+name = "entropy_coding"
+harness = false
+
+[[bench]]
+name = "end_to_end"
+harness = false
+
 [dependencies]
 jxl-transform = { path = "../crates/jxl-transform" }
 jxl-color = { path = "../crates/jxl-color" }
+jxl-bitstream = { path = "../crates/jxl-bitstream" }
+jxl-core = { path = "../crates/jxl-core" }
+jxl-encoder = { path = "../crates/jxl-encoder" }
+jxl-decoder = { path = "../crates/jxl-decoder" }
+jxl = { path = "../crates/jxl" }
 criterion = "0.5"
