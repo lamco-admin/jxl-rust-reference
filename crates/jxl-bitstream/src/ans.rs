@@ -356,6 +356,36 @@ mod tests {
     }
 
     #[test]
+    fn test_rans_ordering_forward_is_wrong() {
+        // This test demonstrates the bug: encoding in forward order
+        // produces reversed output because rANS is LIFO
+        let frequencies = vec![1000, 2000, 1000];
+        let dist = AnsDistribution::from_frequencies(&frequencies).unwrap();
+
+        let symbols = vec![0, 1, 2];
+
+        // WRONG: Encode symbols in FORWARD order
+        let mut encoder = RansEncoder::new();
+        for &sym in symbols.iter() {
+            encoder.encode_symbol(sym, &dist).unwrap();
+        }
+
+        let encoded = encoder.finalize();
+
+        // Decode - will produce symbols in REVERSE order!
+        let mut decoder = RansDecoder::new(encoded).unwrap();
+        let mut decoded = Vec::new();
+
+        for _ in 0..symbols.len() {
+            let sym = decoder.decode_symbol(&dist).unwrap();
+            decoded.push(sym);
+        }
+
+        // This will be [2, 1, 0] not [0, 1, 2]!
+        assert_eq!(decoded, vec![2, 1, 0]);
+    }
+
+    #[test]
     #[ignore = "Complex ANS test with large alphabets needs renormalization tuning - TODO"]
     fn test_rans_encode_decode_complex() {
         let frequencies = vec![100, 200, 300, 400, 500, 300, 200];

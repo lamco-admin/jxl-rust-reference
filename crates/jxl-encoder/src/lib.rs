@@ -377,13 +377,12 @@ impl JxlEncoder {
 
         // Convert to frequency vector
         let max_symbol = *freq_map.keys().max().unwrap_or(&0);
-        let alphabet_size = (max_symbol + 1).min(256) as usize; // Limit to 256 symbols
+        let alphabet_size = (max_symbol + 1) as usize;
 
-        let mut frequencies = vec![1u32; alphabet_size]; // Minimum frequency of 1
+        // Start with minimum frequency of 1 for robustness (helps with unseen symbols)
+        let mut frequencies = vec![1u32; alphabet_size];
         for (&symbol, &freq) in &freq_map {
-            if (symbol as usize) < alphabet_size {
-                frequencies[symbol as usize] += freq;
-            }
+            frequencies[symbol as usize] += freq;
         }
 
         AnsDistribution::from_frequencies(&frequencies).unwrap_or_else(|_| {
@@ -398,8 +397,8 @@ impl JxlEncoder {
         dist: &AnsDistribution,
         writer: &mut BitWriter<W>,
     ) -> JxlResult<()> {
-        // Write alphabet size
-        writer.write_bits(dist.alphabet_size() as u64, 8)?;
+        // Write alphabet size (16 bits to support larger alphabets)
+        writer.write_u32(dist.alphabet_size() as u32, 16)?;
 
         // Write frequencies (simplified - just write raw frequencies)
         for i in 0..dist.alphabet_size() {
@@ -424,17 +423,24 @@ impl JxlEncoder {
             return Ok(());
         }
 
+        // Prepare symbols to encode
+        let mut symbols = Vec::with_capacity(dc_coeffs.len());
+
+        // First DC value
+        symbols.push(self.coeff_to_symbol(dc_coeffs[0]));
+
+        // DC differences
+        for i in 1..dc_coeffs.len() {
+            let diff = dc_coeffs[i] - dc_coeffs[i - 1];
+            symbols.push(self.coeff_to_symbol(diff));
+        }
+
         // Prepare ANS encoder
         let mut encoder = RansEncoder::new();
 
-        // Encode first DC value
-        let symbol = self.coeff_to_symbol(dc_coeffs[0]);
-        encoder.encode_symbol(symbol as usize, dist)?;
-
-        // Encode DC differences
-        for i in 1..dc_coeffs.len() {
-            let diff = dc_coeffs[i] - dc_coeffs[i - 1];
-            let symbol = self.coeff_to_symbol(diff);
+        // CRITICAL: rANS is LIFO - encode symbols in REVERSE order
+        // so decoder gets them in forward order
+        for &symbol in symbols.iter().rev() {
             encoder.encode_symbol(symbol as usize, dist)?;
         }
 
@@ -470,13 +476,21 @@ impl JxlEncoder {
             }
         }
 
-        // Encode values with ANS
-        let mut encoder = RansEncoder::new();
+        // Collect non-zero symbols
+        let mut symbols = Vec::with_capacity(non_zero_count);
         for &coeff in ac_coeffs {
             if coeff != 0 {
-                let symbol = self.coeff_to_symbol(coeff);
-                encoder.encode_symbol(symbol as usize, dist)?;
+                symbols.push(self.coeff_to_symbol(coeff));
             }
+        }
+
+        // Encode values with ANS
+        let mut encoder = RansEncoder::new();
+
+        // CRITICAL: rANS is LIFO - encode symbols in REVERSE order
+        // so decoder gets them in forward order
+        for &symbol in symbols.iter().rev() {
+            encoder.encode_symbol(symbol as usize, dist)?;
         }
 
         let ans_data = encoder.finalize();

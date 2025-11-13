@@ -213,8 +213,8 @@ impl JxlDecoder {
         &self,
         reader: &mut BitReader<R>,
     ) -> JxlResult<AnsDistribution> {
-        // Read alphabet size
-        let alphabet_size = reader.read_bits(8)? as usize;
+        // Read alphabet size (16 bits to support larger alphabets)
+        let alphabet_size = reader.read_u32(16)? as usize;
 
         // Read frequencies
         let mut frequencies = Vec::with_capacity(alphabet_size);
