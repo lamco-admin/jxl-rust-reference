@@ -7,6 +7,7 @@ pub mod dct_simd;
 pub mod groups;
 pub mod modular;
 pub mod prediction;
+pub mod progressive;
 pub mod quantization;
 pub mod zigzag;
 
@@ -15,5 +16,6 @@ pub use dct_simd::*;
 pub use groups::*;
 pub use modular::*;
 pub use prediction::*;
+pub use progressive::*;
 pub use quantization::*;
 pub use zigzag::*;
