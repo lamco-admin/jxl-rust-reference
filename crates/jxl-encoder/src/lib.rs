@@ -3,7 +3,7 @@
 use jxl_bitstream::{AnsDistribution, RansEncoder, BitWriter};
 use jxl_color::{rgb_to_xyb, srgb_u8_to_linear_f32};
 use jxl_core::*;
-use jxl_headers::Container;
+use jxl_headers::{Container, JxlImageMetadata, CODESTREAM_SIGNATURE};
 use jxl_transform::{
     dct_channel, generate_xyb_quant_tables, quantize_channel, separate_dc_ac, zigzag_scan_channel,
 };
@@ -86,52 +86,26 @@ impl JxlEncoder {
         {
             let mut bit_writer = BitWriter::new(Cursor::new(&mut codestream));
 
-            // Write naked codestream signature
-            bit_writer.write_bits(0x0AFF, 16)?;
+            // Write naked codestream signature (JPEG XL spec Section 3.1)
+            bit_writer.write_bits(CODESTREAM_SIGNATURE[0] as u64, 8)?;
+            bit_writer.write_bits(CODESTREAM_SIGNATURE[1] as u64, 8)?;
 
-            // Write size header (simplified)
-            let small = image.width() <= 32 && image.height() <= 32;
-            bit_writer.write_bits(if small { 0 } else { 1 }, 8)?;
-
-            if small {
-                bit_writer.write_bits((image.width() - 1) as u64, 5)?;
-                bit_writer.write_bits((image.height() - 1) as u64, 5)?;
-            } else {
-                bit_writer.write_u32(image.width(), 9)?;
-                bit_writer.write_u32(image.height(), 9)?;
-            }
-
-            // Write bit depth
-            let bit_depth_enc = match image.pixel_type {
-                PixelType::U8 => 0,
-                PixelType::U16 => 2,
-                PixelType::F16 => 2,
-                PixelType::F32 => 3,
+            // Create spec-compliant metadata
+            let bits_per_sample = match image.pixel_type {
+                PixelType::U8 => 8,
+                PixelType::U16 => 16,
+                PixelType::F16 => 16,
+                PixelType::F32 => 32,
             };
-            bit_writer.write_bits(bit_depth_enc, 2)?;
-            if bit_depth_enc == 3 {
-                bit_writer.write_bits(31, 6)?; // 32-bit
-            }
 
-            // Write channels
-            let num_extra = image.channel_count() - 3;
-            bit_writer.write_bits(num_extra as u64, 2)?;
+            let metadata = JxlImageMetadata::for_rgb_image(
+                image.width(),
+                image.height(),
+                bits_per_sample
+            );
 
-            // Write color encoding
-            let color_enc = match image.color_encoding {
-                ColorEncoding::SRGB => 0,
-                ColorEncoding::LinearSRGB => 1,
-                ColorEncoding::XYB => 2,
-                _ => 3,
-            };
-            bit_writer.write_bits(color_enc, 2)?;
-
-            // Write orientation
-            bit_writer.write_bits(1, 3)?; // Identity
-
-            // Write flags
-            bit_writer.write_bit(false)?; // not animation
-            bit_writer.write_bit(false)?; // no preview
+            // Write spec-compliant metadata
+            metadata.encode(&mut bit_writer)?;
 
             // Encode frame data
             self.encode_frame(image, &mut bit_writer)?;
