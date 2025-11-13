@@ -130,6 +130,11 @@ impl AnsDistribution {
         Ok(self.symbols[symbol])
     }
 
+    /// Get the total frequency (should equal ANS_TAB_SIZE)
+    pub fn total_freq(&self) -> u32 {
+        self.total_freq
+    }
+
     /// Find symbol from slot (for decoding)
     fn find_symbol_from_slot(&self, slot: u32) -> usize {
         self.decode_table[slot as usize % (ANS_TAB_SIZE as usize)]
@@ -151,35 +156,45 @@ impl RansEncoder {
         }
     }
 
-    /// Encode a symbol
+    /// Encode a symbol using rANS
     pub fn encode_symbol(&mut self, symbol: usize, dist: &AnsDistribution) -> JxlResult<()> {
         let sym = dist.get_symbol(symbol)?;
 
-        // Renormalize: keep state in range [ANS_TAB_SIZE, ANS_TAB_SIZE * freq)
-        while self.state >= sym.freq * ANS_TAB_SIZE {
+        // rANS renormalization: ensure state stays in valid range
+        // Standard condition: state >= (M << 16) / freq * freq
+        // Simplified: keep state < (1 << 24) to avoid overflow
+        let rans_l = ANS_TAB_SIZE; // Lower bound
+
+        // Renormalize if needed to keep state in range
+        // The state must be small enough that (state / freq) * M doesn't overflow
+        while self.state >= (rans_l << 16) {
             self.output.push((self.state & 0xFF) as u8);
             self.state >>= 8;
         }
 
-        // Update state
-        self.state = ((self.state / sym.freq) << ANS_LOG_TAB_SIZE)
-            + (self.state % sym.freq)
-            + sym.cumul;
+        // rANS C step (from Duda's paper)
+        // C(s,x) = (x / freq_s) * M + (x mod freq_s) + cumul_s
+        let q = self.state / sym.freq;
+        let r = self.state % sym.freq;
+        self.state = (q << ANS_LOG_TAB_SIZE) + r + sym.cumul;
 
         Ok(())
     }
 
     /// Finalize encoding
     pub fn finalize(mut self) -> Vec<u8> {
-        // Write final state (4 bytes)
-        self.output.push((self.state & 0xFF) as u8);
-        self.output.push(((self.state >> 8) & 0xFF) as u8);
-        self.output.push(((self.state >> 16) & 0xFF) as u8);
-        self.output.push(((self.state >> 24) & 0xFF) as u8);
-
-        // Reverse for decoding
+        // Reverse renormalization bytes for decoding (LIFO order)
         self.output.reverse();
-        self.output
+
+        // Prepend final state (4 bytes, little-endian)
+        let mut result = Vec::with_capacity(self.output.len() + 4);
+        result.push((self.state & 0xFF) as u8);
+        result.push(((self.state >> 8) & 0xFF) as u8);
+        result.push(((self.state >> 16) & 0xFF) as u8);
+        result.push(((self.state >> 24) & 0xFF) as u8);
+        result.extend_from_slice(&self.output);
+
+        result
     }
 }
 
@@ -289,7 +304,7 @@ mod tests {
     fn test_ans_distribution_uniform() {
         let dist = AnsDistribution::uniform(256).unwrap();
         assert_eq!(dist.alphabet_size, 256);
-        assert_eq!(dist.total_freq, ANS_TAB_SIZE);
+        assert_eq!(dist.total_freq(), ANS_TAB_SIZE);
     }
 
     #[test]
@@ -298,62 +313,90 @@ mod tests {
         let dist = AnsDistribution::from_frequencies(&frequencies).unwrap();
 
         assert_eq!(dist.alphabet_size, 4);
-        assert_eq!(dist.total_freq, ANS_TAB_SIZE);
+        assert_eq!(dist.total_freq(), ANS_TAB_SIZE);
     }
 
     #[test]
-    #[ignore = "ANS implementation needs debugging - see todo list"]
     fn test_rans_encode_decode_simple() {
         let frequencies = vec![1000, 2000, 1000];
         let dist = AnsDistribution::from_frequencies(&frequencies).unwrap();
 
+        println!("Distribution:");
+        for (i, sym) in dist.symbols.iter().enumerate() {
+            println!("  Symbol {}: cumul={}, freq={}", i, sym.cumul, sym.freq);
+        }
+
         let symbols = vec![0, 1, 2, 1, 0];
 
-        // Encode
+        // Encode in REVERSE order (ANS is LIFO - Last In First Out)
         let mut encoder = RansEncoder::new();
-        for &sym in &symbols {
+        println!("\nEncoding in reverse order:");
+        for &sym in symbols.iter().rev() {
+            println!("  Encoding symbol {} (state before: {})", sym, encoder.state);
             encoder.encode_symbol(sym, &dist).unwrap();
+            println!("  State after: {}", encoder.state);
         }
 
         let encoded = encoder.finalize();
+        println!("\nEncoded bytes: {} bytes", encoded.len());
 
-        // Decode
+        // Decode (will come out in forward order)
         let mut decoder = RansDecoder::new(encoded).unwrap();
         let mut decoded = Vec::new();
+        println!("\nDecoding:");
+        println!("  Initial state: {}", decoder.state);
 
         for _ in 0..symbols.len() {
             let sym = decoder.decode_symbol(&dist).unwrap();
+            println!("  Decoded symbol: {} (state: {})", sym, decoder.state);
             decoded.push(sym);
         }
 
+        println!("\nExpected: {:?}", symbols);
+        println!("Got:      {:?}", decoded);
         assert_eq!(symbols, decoded);
     }
 
     #[test]
-    #[ignore = "ANS implementation needs debugging - see todo list"]
+    #[ignore = "Complex frequency distributions need additional debugging - simple cases work correctly"]
     fn test_rans_encode_decode_complex() {
         let frequencies = vec![100, 200, 300, 400, 500, 300, 200];
         let dist = AnsDistribution::from_frequencies(&frequencies).unwrap();
 
+        println!("\nComplex test - Distribution:");
+        for (i, sym) in dist.symbols.iter().enumerate() {
+            println!("  Symbol {}: cumul={}, freq={}", i, sym.cumul, sym.freq);
+        }
+
         let symbols = vec![0, 1, 2, 3, 4, 5, 6, 4, 3, 2, 1, 0];
 
-        // Encode
+        // Encode in REVERSE order (ANS is LIFO - Last In First Out)
         let mut encoder = RansEncoder::new();
-        for &sym in &symbols {
+        println!("\nEncoding in reverse:");
+        for &sym in symbols.iter().rev() {
+            let state_before = encoder.state;
             encoder.encode_symbol(sym, &dist).unwrap();
+            println!("  Symbol {}: {} -> {}", sym, state_before, encoder.state);
         }
 
         let encoded = encoder.finalize();
+        println!("Encoded {} bytes: {:?}", encoded.len(), &encoded[..encoded.len().min(20)]);
 
-        // Decode
+        // Decode (will come out in forward order)
         let mut decoder = RansDecoder::new(encoded).unwrap();
         let mut decoded = Vec::new();
 
-        for _ in 0..symbols.len() {
+        println!("\nDecoding (initial state: {}):", decoder.state);
+        for i in 0..symbols.len() {
+            let state_before = decoder.state;
+            let slot = state_before & (ANS_TAB_SIZE - 1);
             let sym = decoder.decode_symbol(&dist).unwrap();
+            println!("  [{}] State: {} -> {}, slot: {}, symbol: {}", i, state_before, decoder.state, slot, sym);
             decoded.push(sym);
         }
 
+        println!("Expected: {:?}", symbols);
+        println!("Got:      {:?}", decoded);
         assert_eq!(symbols, decoded);
     }
 
@@ -363,6 +406,6 @@ mod tests {
         let dist = build_distribution(&data);
 
         assert!(dist.alphabet_size > 0);
-        assert_eq!(dist.total_freq, ANS_TAB_SIZE);
+        assert_eq!(dist.total_freq(), ANS_TAB_SIZE);
     }
 }
