@@ -178,33 +178,27 @@ impl ContextModel {
     /// Build ANS distribution for a specific frequency band
     fn build_distribution_for_band(coeffs: &[i16]) -> JxlResult<AnsDistribution> {
         // Collect symbol frequencies using zigzag encoding
-        const MAX_SYMBOL: usize = 512; // Support symbols 0-511
+        // ANS_TAB_SIZE is 4096, so we limit alphabet to reasonable size
+        // Support coefficients in range [-2048, 2047] → symbols [0, 4095]
+        const MAX_SYMBOL: usize = 4096;
         let mut frequencies = vec![0u32; MAX_SYMBOL];
 
         for &coeff in coeffs {
             let symbol = Self::coeff_to_symbol(coeff);
-            if (symbol as usize) < MAX_SYMBOL {
-                frequencies[symbol as usize] += 1;
-            }
+            // Clip symbols that exceed our alphabet size
+            let clipped_symbol = (symbol as usize).min(MAX_SYMBOL - 1);
+            frequencies[clipped_symbol] += 1;
         }
 
-        // Ensure no zero frequencies (add Laplace smoothing)
+        // Ensure no zero frequencies for a reasonable symbol range
         let total: u32 = frequencies.iter().sum();
         if total == 0 {
-            // No coefficients, use uniform distribution
-            for f in frequencies.iter_mut().take(256) {
-                *f = 1;
-            }
-        } else {
-            // Laplace smoothing: add 1 to all non-zero frequencies
-            for f in frequencies.iter_mut() {
-                if *f > 0 {
-                    *f += 1;
-                }
-            }
+            // No coefficients, use small uniform distribution
+            let alphabet_size = 256;
+            return AnsDistribution::from_frequencies(&vec![1; alphabet_size]);
         }
 
-        // Trim to actual used range
+        // Find the actual range of symbols used
         let max_used_symbol = frequencies
             .iter()
             .enumerate()
@@ -213,7 +207,18 @@ impl ContextModel {
             .map(|(i, _)| i)
             .unwrap_or(255);
 
-        frequencies.truncate(max_used_symbol + 1);
+        // Trim to actual range, but keep at least 256 symbols
+        let alphabet_size = (max_used_symbol + 1).max(256);
+        frequencies.truncate(alphabet_size);
+
+        // Add small frequency to all symbols in alphabet to prevent zero-frequency errors
+        // But be careful not to make total too large
+        let min_freq = 1;
+        for f in frequencies.iter_mut() {
+            if *f == 0 {
+                *f = min_freq;
+            }
+        }
 
         AnsDistribution::from_frequencies(&frequencies)
     }

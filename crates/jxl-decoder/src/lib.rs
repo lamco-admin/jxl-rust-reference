@@ -2,7 +2,7 @@
 
 pub mod progressive;
 
-use jxl_bitstream::{AnsDistribution, RansDecoder, BitReader};
+use jxl_bitstream::{AnsDistribution, RansDecoder, BitReader, ContextModel, Context};
 use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
 use jxl_core::*;
 use jxl_headers::{Container, JxlHeader, JxlImageMetadata, CODESTREAM_SIGNATURE};
@@ -254,7 +254,7 @@ impl JxlDecoder {
         Ok(())
     }
 
-    /// Decode quantized DCT coefficients with ANS entropy decoding
+    /// Decode quantized DCT coefficients with context-aware ANS entropy decoding
     fn decode_coefficients<R: Read>(
         &self,
         reader: &mut BitReader<R>,
@@ -268,14 +268,22 @@ impl JxlDecoder {
         let blocks_y = height.div_ceil(8);
         let num_blocks = blocks_x * blocks_y;
 
-        // Read ANS distributions
-        let dc_dist = self.read_distribution(reader)?;
-        let ac_dist = self.read_distribution(reader)?;
+        // Read 4 context-aware ANS distributions
+        let mut distributions = Vec::new();
+        for _ in 0..4 {
+            distributions.push(self.read_distribution(reader)?);
+        }
+        let context_model = ContextModel::new(distributions)?;
 
         for channel_data in quantized.iter_mut().take(3) {
-            // Decode DC and AC coefficients with ANS
-            let dc_coeffs = self.decode_dc_coefficients_ans(reader, &dc_dist)?;
-            let ac_coeffs = self.decode_ac_coefficients_ans(reader, num_blocks, &ac_dist)?;
+            // Decode DC and AC coefficients with context-aware ANS
+            let dc_coeffs = self.decode_dc_coefficients_context_aware(reader, &context_model)?;
+            let ac_coeffs = self.decode_ac_coefficients_context_aware(
+                reader,
+                num_blocks,
+                &context_model,
+                blocks_x,
+            )?;
 
             // Merge DC and AC back into zigzag format
             let mut zigzag_data = Vec::new();
@@ -292,6 +300,109 @@ impl JxlDecoder {
         }
 
         Ok(quantized)
+    }
+
+    /// Decode DC coefficients with context-aware ANS
+    fn decode_dc_coefficients_context_aware<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+        context_model: &ContextModel,
+    ) -> JxlResult<Vec<i16>> {
+        // Read number of DC coefficients
+        let num_dc = reader.read_u32(20)? as usize;
+
+        if num_dc == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Read ANS data
+        let ans_data_len = reader.read_u32(20)? as usize;
+        let mut ans_data = Vec::with_capacity(ans_data_len);
+        for _ in 0..ans_data_len {
+            ans_data.push(reader.read_bits(8)? as u8);
+        }
+
+        // Decode with context-aware ANS
+        let mut decoder = RansDecoder::new(ans_data)?;
+        let mut dc_coeffs = Vec::with_capacity(num_dc);
+
+        let dc_context = Context::dc_context(0, 0);
+        let dc_dist = context_model.get_distribution(&dc_context);
+
+        // Decode first DC value
+        let symbol = decoder.decode_symbol(dc_dist)?;
+        let first_dc = self.symbol_to_coeff(symbol as u32);
+        dc_coeffs.push(first_dc);
+
+        // Decode DC differences
+        let mut prev_dc = first_dc;
+        for _ in 1..num_dc {
+            let symbol = decoder.decode_symbol(dc_dist)?;
+            let diff = self.symbol_to_coeff(symbol as u32);
+            let dc = prev_dc + diff;
+            dc_coeffs.push(dc);
+            prev_dc = dc;
+        }
+
+        Ok(dc_coeffs)
+    }
+
+    /// Decode AC coefficients with context-aware ANS
+    fn decode_ac_coefficients_context_aware<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+        num_blocks: usize,
+        context_model: &ContextModel,
+        blocks_x: usize,
+    ) -> JxlResult<Vec<i16>> {
+        // Read number of non-zero AC coefficients
+        let non_zero_count = reader.read_u32(20)? as usize;
+
+        // AC array size: 63 coefficients per block (64 total - 1 DC)
+        let ac_size = num_blocks * 63;
+        let mut ac_coeffs = vec![0i16; ac_size];
+
+        if non_zero_count == 0 {
+            return Ok(ac_coeffs);
+        }
+
+        // Read positions
+        let mut positions = Vec::with_capacity(non_zero_count);
+        for _ in 0..non_zero_count {
+            let pos = reader.read_u32(20)? as usize;
+            positions.push(pos);
+        }
+
+        // Read ANS data
+        let ans_data_len = reader.read_u32(20)? as usize;
+        let mut ans_data = Vec::with_capacity(ans_data_len);
+        for _ in 0..ans_data_len {
+            ans_data.push(reader.read_bits(8)? as u8);
+        }
+
+        // Decode values with context-aware ANS
+        let mut decoder = RansDecoder::new(ans_data)?;
+
+        for &pos in &positions {
+            // Determine context based on coefficient position
+            let block_idx = pos / 63;
+            let coeff_idx_in_block = pos % 63 + 1; // +1 because AC starts at index 1
+
+            let block_x = block_idx % blocks_x;
+            let block_y = block_idx / blocks_x;
+
+            let context = Context::ac_context(coeff_idx_in_block, block_x, block_y, 0);
+            let dist = context_model.get_distribution(&context);
+
+            let symbol = decoder.decode_symbol(dist)?;
+            let coeff = self.symbol_to_coeff(symbol as u32);
+
+            if pos < ac_coeffs.len() {
+                ac_coeffs[pos] = coeff;
+            }
+        }
+
+        Ok(ac_coeffs)
     }
 
     /// Read ANS distribution from bitstream
