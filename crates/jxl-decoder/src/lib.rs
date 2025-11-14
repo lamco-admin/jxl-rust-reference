@@ -317,6 +317,15 @@ impl JxlDecoder {
             modular_img.inverse_predictor(ch, Predictor::Gradient, &residuals)?;
         }
 
+        // Remove bias from Co and Cg channels (undo encoder bias)
+        // Co: 0-510 → subtract 255 → -255 to 255
+        // Cg: 0-510 → subtract 255 → -255 to 255
+        // This reverses the bias applied by the encoder
+        for i in 0..modular_img.data[1].len() {
+            modular_img.data[1][i] -= 255;  // Co offset
+            modular_img.data[2][i] -= 255;  // Cg offset
+        }
+
         // Apply inverse RCT to convert YCoCg back to RGB
         let mut rgb_channels = vec![Vec::new(); 3];
         inverse_rct(
@@ -327,6 +336,8 @@ impl JxlDecoder {
         );
 
         // Convert to target pixel format
+        // Note: RGB values should be in [0, 255] range after correct RCT
+        // Clamping is used as a safety measure but shouldn't be needed for valid data
         match &mut image.buffer {
             ImageBuffer::U8(buffer) => {
                 for ch in 0..3 {

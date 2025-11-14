@@ -364,9 +364,20 @@ impl JxlEncoder {
         if num_channels >= 3 {
             let mut ycocg = vec![Vec::new(); 3];
             apply_rct(&modular_img.data[0], &modular_img.data[1], &modular_img.data[2], &mut ycocg);
+
             modular_img.data[0] = ycocg[0].clone();
             modular_img.data[1] = ycocg[1].clone();
             modular_img.data[2] = ycocg[2].clone();
+
+            // Bias Co/Cg values to make them unsigned for predictor
+            // Y: 0-255 (already unsigned)
+            // Co: -255 to 255 → add 255 → 0 to 510
+            // Cg: -255 to 255 → add 255 → 0 to 510
+            // This is necessary because the gradient predictor assumes unsigned values
+            for i in 0..modular_img.data[1].len() {
+                modular_img.data[1][i] += 255;  // Co offset
+                modular_img.data[2][i] += 255;  // Cg offset
+            }
         }
 
         // Apply predictive coding to each channel
@@ -430,7 +441,8 @@ impl JxlEncoder {
 
         // Convert to frequency vector
         let max_symbol = *freq_map.keys().max().unwrap_or(&0);
-        let alphabet_size = (max_symbol + 1).min(512) as usize; // Limit alphabet size
+        // Use 12-bit alphabet (4096) like JPEG XL spec, not 512
+        let alphabet_size = (max_symbol + 1).min(4096) as usize;
         let mut frequencies = vec![1u32; alphabet_size]; // Start with 1 for all symbols
 
         for (&symbol, &freq) in &freq_map {
