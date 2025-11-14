@@ -144,6 +144,96 @@ impl MATreeNode {
             0
         }
     }
+
+    /// Build a default MA tree with 4 contexts based on gradient properties
+    ///
+    /// Tree structure:
+    /// - Property 0: Gradient magnitude (|left - top_left| + |top - top_left|)
+    /// - Property 1: Local variance (|left - top|)
+    ///
+    /// Contexts:
+    /// - 0: Smooth areas (low gradient, low variance)
+    /// - 1: Smooth with variation (low gradient, high variance)
+    /// - 2: Edge areas (high gradient, low variance)
+    /// - 3: Complex/textured areas (high gradient, high variance)
+    pub fn build_default() -> Self {
+        // Split on gradient magnitude (threshold: 32 for 8-bit, scales for higher bit depths)
+        let grad_split = MATreeNode::split(
+            0,
+            32,
+            // Low gradient: split on local variance
+            MATreeNode::split(
+                1,
+                16,
+                MATreeNode::leaf(0), // Low gradient, low variance (smooth)
+                MATreeNode::leaf(1), // Low gradient, high variance (smooth with variation)
+            ),
+            // High gradient: split on local variance
+            MATreeNode::split(
+                1,
+                16,
+                MATreeNode::leaf(2), // High gradient, low variance (edges)
+                MATreeNode::leaf(3), // High gradient, high variance (texture)
+            ),
+        );
+        grad_split
+    }
+
+    /// Build MA tree with scaled thresholds for specific bit depth
+    ///
+    /// # Arguments
+    /// * `bit_depth` - Bit depth of the image (8 or 16)
+    pub fn build_for_bit_depth(bit_depth: u8) -> Self {
+        let scale = if bit_depth <= 8 {
+            1
+        } else {
+            // Scale thresholds for 16-bit images
+            1 << (bit_depth - 8)
+        };
+
+        let grad_threshold = 32 * scale;
+        let variance_threshold = 16 * scale;
+
+        MATreeNode::split(
+            0,
+            grad_threshold,
+            MATreeNode::split(
+                1,
+                variance_threshold,
+                MATreeNode::leaf(0),
+                MATreeNode::leaf(1),
+            ),
+            MATreeNode::split(
+                1,
+                variance_threshold,
+                MATreeNode::leaf(2),
+                MATreeNode::leaf(3),
+            ),
+        )
+    }
+}
+
+/// Compute context properties for a pixel position
+///
+/// Properties computed:
+/// - 0: Gradient magnitude (|left - top_left| + |top - top_left|)
+/// - 1: Local variance (|left - top|)
+///
+/// # Arguments
+/// * `left` - Left pixel value
+/// * `top` - Top pixel value
+/// * `top_left` - Top-left pixel value
+///
+/// # Returns
+/// Array of property values [gradient_magnitude, local_variance]
+pub fn compute_context_properties(left: i32, top: i32, top_left: i32) -> [i32; 2] {
+    let grad_left = (left - top_left).abs();
+    let grad_top = (top - top_left).abs();
+    let gradient_magnitude = grad_left + grad_top;
+
+    let local_variance = (left - top).abs();
+
+    [gradient_magnitude, local_variance]
 }
 
 /// Modular image representation
@@ -228,6 +318,78 @@ impl ModularImage {
         Ok(())
     }
 
+    /// Apply predictor with MA tree context tracking
+    ///
+    /// Computes residuals and assigns each pixel to a context using the MA tree.
+    /// Returns residuals grouped by context ID.
+    ///
+    /// # Arguments
+    /// * `channel` - Channel index to process
+    /// * `predictor` - Predictor to use
+    /// * `ma_tree` - MA tree for context selection
+    ///
+    /// # Returns
+    /// Vector of (context_id, residuals) tuples, one per context
+    pub fn apply_predictor_with_context(
+        &self,
+        channel: usize,
+        predictor: Predictor,
+        ma_tree: &MATreeNode,
+    ) -> JxlResult<Vec<(u32, Vec<(usize, i32)>)>> {
+        if channel >= self.num_channels {
+            return Err(JxlError::InvalidParameter(format!(
+                "Channel {} out of range",
+                channel
+            )));
+        }
+
+        let chan_data = &self.data[channel];
+
+        // Group residuals by context
+        let mut context_groups: std::collections::HashMap<u32, Vec<(usize, i32)>> =
+            std::collections::HashMap::new();
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = y * self.width + x;
+                let pixel = chan_data[idx];
+
+                // Get context pixels
+                let left = if x > 0 { chan_data[idx - 1] } else { 0 };
+                let top = if y > 0 {
+                    chan_data[idx - self.width]
+                } else {
+                    0
+                };
+                let top_left = if x > 0 && y > 0 {
+                    chan_data[idx - self.width - 1]
+                } else {
+                    0
+                };
+
+                // Compute context properties and get context ID from MA tree
+                let properties = compute_context_properties(left, top, top_left);
+                let context_id = ma_tree.get_context(&properties);
+
+                // Predict and compute residual
+                let prediction = predictor.predict(left, top, top_left);
+                let residual = pixel - prediction;
+
+                // Add to context group (store index and residual for correct order during decode)
+                context_groups
+                    .entry(context_id)
+                    .or_insert_with(Vec::new)
+                    .push((idx, residual));
+            }
+        }
+
+        // Convert to sorted vector for deterministic encoding
+        let mut result: Vec<(u32, Vec<(usize, i32)>)> = context_groups.into_iter().collect();
+        result.sort_by_key(|(context_id, _)| *context_id);
+
+        Ok(result)
+    }
+
     /// Inverse predictor to reconstruct channel
     pub fn inverse_predictor(
         &mut self,
@@ -269,6 +431,80 @@ impl ModularImage {
                 } else {
                     0
                 };
+
+                // Predict and add residual
+                let prediction = predictor.predict(left, top, top_left);
+                chan_data[idx] = prediction + residual;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Inverse predictor with MA tree context (for context-grouped residuals)
+    ///
+    /// Reconstructs channel from residuals grouped by context.
+    /// Residuals must contain (index, residual) tuples for all pixels.
+    ///
+    /// # Arguments
+    /// * `channel` - Channel index to reconstruct
+    /// * `predictor` - Predictor to use (must match encoder)
+    /// * `ma_tree` - MA tree for context selection (must match encoder)
+    /// * `context_groups` - Residuals grouped by context ID
+    pub fn inverse_predictor_with_context(
+        &mut self,
+        channel: usize,
+        predictor: Predictor,
+        ma_tree: &MATreeNode,
+        context_groups: &[(u32, Vec<(usize, i32)>)],
+    ) -> JxlResult<()> {
+        if channel >= self.num_channels {
+            return Err(JxlError::InvalidParameter(format!(
+                "Channel {} out of range",
+                channel
+            )));
+        }
+
+        // Create a flat residual array for reconstruction
+        let size = self.width * self.height;
+        let mut residual_map: Vec<Option<i32>> = vec![None; size];
+
+        // Populate residual map from context groups
+        for (_context_id, residuals) in context_groups {
+            for &(idx, residual) in residuals {
+                if idx < size {
+                    residual_map[idx] = Some(residual);
+                }
+            }
+        }
+
+        // Reconstruct in raster order (needed for predictor to work correctly)
+        let chan_data = &mut self.data[channel];
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = y * self.width + x;
+
+                let residual = residual_map[idx].ok_or_else(|| {
+                    JxlError::InvalidBitstream(format!("Missing residual at index {}", idx))
+                })?;
+
+                // Get context pixels (already reconstructed)
+                let left = if x > 0 { chan_data[idx - 1] } else { 0 };
+                let top = if y > 0 {
+                    chan_data[idx - self.width]
+                } else {
+                    0
+                };
+                let top_left = if x > 0 && y > 0 {
+                    chan_data[idx - self.width - 1]
+                } else {
+                    0
+                };
+
+                // Verify context matches (optional check for debugging)
+                let properties = compute_context_properties(left, top, top_left);
+                let _expected_context = ma_tree.get_context(&properties);
 
                 // Predict and add residual
                 let prediction = predictor.predict(left, top, top_left);
