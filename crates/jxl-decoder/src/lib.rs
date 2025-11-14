@@ -341,17 +341,20 @@ impl JxlDecoder {
         }
         let context_model = ContextModel::new(distributions)?;
 
-        // Decode all channels
-        for channel_data in quantized.iter_mut().take(3) {
-            // Pass 1: Decode DC coefficients
+        // Decode DC coefficients for all channels first
+        let mut all_dc_coeffs = Vec::new();
+        for _ in 0..3 {
             let dc_coeffs = self.decode_dc_coefficients_context_aware(reader, &context_model)?;
+            all_dc_coeffs.push(dc_coeffs);
+        }
 
-            // Initialize AC array
-            let mut ac_coeffs = vec![0i16; num_blocks * 63];
+        // Initialize AC arrays for all channels
+        let mut all_ac_coeffs: Vec<Vec<i16>> = vec![vec![0i16; num_blocks * 63]; 3];
 
-            // Passes 2+: Decode AC coefficients progressively
-            let mut coeff_offset = 0;
-            for &coeff_count in &scan_config {
+        // Decode AC passes (interleaved by pass, then by channel)
+        let mut coeff_offset = 0;
+        for &coeff_count in &scan_config {
+            for ch in 0..3 {
                 let pass_ac = self.decode_ac_pass(
                     reader,
                     num_blocks,
@@ -361,23 +364,26 @@ impl JxlDecoder {
                     blocks_x,
                 )?;
 
-                // Merge AC pass into full AC array
+                // Merge AC pass into full AC array for this channel
                 for block_idx in 0..num_blocks {
                     for i in 0..coeff_count {
                         let src_idx = block_idx * coeff_count + i;
                         let dst_idx = block_idx * 63 + coeff_offset + i;
-                        if dst_idx < ac_coeffs.len() && src_idx < pass_ac.len() {
-                            ac_coeffs[dst_idx] = pass_ac[src_idx];
+                        if dst_idx < all_ac_coeffs[ch].len() && src_idx < pass_ac.len() {
+                            all_ac_coeffs[ch][dst_idx] = pass_ac[src_idx];
                         }
                     }
                 }
-
-                coeff_offset += coeff_count;
             }
 
+            coeff_offset += coeff_count;
+        }
+
+        // Reconstruct channels from DC and AC coefficients
+        for (ch, channel_data) in quantized.iter_mut().enumerate().take(3) {
             // Merge DC and AC back into zigzag format
             let mut zigzag_data = Vec::new();
-            merge_dc_ac(&dc_coeffs, &ac_coeffs, &mut zigzag_data);
+            merge_dc_ac(&all_dc_coeffs[ch], &all_ac_coeffs[ch], &mut zigzag_data);
 
             // Apply inverse zigzag to restore spatial block order
             let mut spatial_data = Vec::new();

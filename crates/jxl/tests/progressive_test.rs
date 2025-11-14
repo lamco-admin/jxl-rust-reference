@@ -168,7 +168,6 @@ fn test_encoder_progressive_option() {
 }
 
 #[test]
-#[ignore] // TODO: Fix progressive roundtrip - debugging needed for AC pass extraction
 fn test_progressive_roundtrip_compatibility() {
     // Verify that non-progressive decoder can read progressive-encoded images
     let dimensions = Dimensions::new(128, 128);
