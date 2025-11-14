@@ -174,9 +174,12 @@ impl JxlEncoder {
             ));
         }
 
-        // Check if lossless mode is enabled
+        // Write lossless mode marker (1 bit)
         if self.options.lossless {
+            writer.write_bits(1, 1)?; // Lossless mode
             return self.encode_frame_lossless(image, width, height, num_channels, writer);
+        } else {
+            writer.write_bits(0, 1)?; // Lossy mode
         }
 
         // Step 1: Convert to f32 and normalize to [0, 1]
@@ -323,6 +326,9 @@ impl JxlEncoder {
         // 3. Apply predictive coding (Gradient predictor)
         // 4. Encode residuals with ANS
 
+        // Write modular mode marker (1 bit)
+        writer.write_bits(1, 1)?;
+
         // Create modular image from input
         let mut modular_img = ModularImage::new(width, height, num_channels.min(3), 8);
 
@@ -353,12 +359,6 @@ impl JxlEncoder {
                 }
             }
         }
-
-        // Write lossless mode marker (1 bit)
-        writer.write_bits(1, 1)?;
-
-        // Write modular mode marker (1 bit)
-        writer.write_bits(1, 1)?;
 
         // Apply RCT (reversible color transform) if RGB
         if num_channels >= 3 {
