@@ -1,8 +1,9 @@
 //! Transform operations for JPEG XL
 //!
 //! This crate implements DCT (Discrete Cosine Transform), prediction operations, group processing,
-//! modular mode for lossless encoding, and SIMD optimizations.
+//! modular mode for lossless encoding, SIMD optimizations, and adaptive quantization.
 
+pub mod adaptive_quant;
 pub mod dct;
 pub mod dct_optimized;
 pub mod groups;
@@ -12,6 +13,7 @@ pub mod quantization;
 pub mod simd;
 pub mod zigzag;
 
+pub use adaptive_quant::*;
 pub use dct::*;
 pub use dct_optimized::*;
 pub use groups::*;
