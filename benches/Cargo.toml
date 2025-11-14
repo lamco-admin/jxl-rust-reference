@@ -20,6 +20,14 @@ harness = false
 name = "dct_comparison"
 harness = false
 
+[[bench]]
+name = "simd_performance"
+harness = false
+
+[[bench]]
+name = "compression_quality"
+harness = false
+
 [dependencies]
 jxl-transform = { path = "../crates/jxl-transform" }
 jxl-color = { path = "../crates/jxl-color" }

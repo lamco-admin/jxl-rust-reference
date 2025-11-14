@@ -8,7 +8,9 @@ members = [
     "crates/jxl-headers",
     "crates/jxl-decoder",
     "crates/jxl-encoder",
-    "crates/jxl", "tools/diagnose-gradient",
+    "crates/jxl",
+    "tools/diagnose-gradient",
+    "benches",
 ]
 
 [workspace.package]
