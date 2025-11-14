@@ -537,3 +537,111 @@ fn test_lossless_roundtrip_16bit_high_frequency() {
 
     println!("✓ Lossless roundtrip: 16-bit high frequency perfect reconstruction");
 }
+
+#[test]
+fn test_lossless_roundtrip_rgba() {
+    // Test RGBA (4-channel) lossless encoding with alpha channel
+    let dimensions = Dimensions::new(32, 32);
+    let mut original = Image::new(
+        dimensions,
+        ColorChannels::RGBA,
+        PixelType::U8,
+        ColorEncoding::SRGB,
+    )
+    .unwrap();
+
+    // Fill with gradient pattern including varying alpha
+    if let ImageBuffer::U8(ref mut data) = original.buffer {
+        for y in 0..32 {
+            for x in 0..32 {
+                let idx = (y * 32 + x) * 4;
+                data[idx] = ((x * 8) % 256) as u8;           // R
+                data[idx + 1] = ((y * 8) % 256) as u8;       // G
+                data[idx + 2] = ((x + y) * 4 % 256) as u8;   // B
+                data[idx + 3] = 128;  // Solid alpha for simplicity
+            }
+        }
+    }
+
+    // Encode lossless
+    let options = EncoderOptions::default().lossless(true);
+    let mut encoder = JxlEncoder::new(options);
+    let mut encoded = Vec::new();
+    encoder.encode(&original, &mut encoded).unwrap();
+
+    println!("RGBA encoded to {} bytes", encoded.len());
+
+    // Decode
+    let mut decoder = JxlDecoder::new();
+    let decoded = decoder.decode(encoded.as_slice()).unwrap();
+
+    // Verify perfect reconstruction
+    if let (ImageBuffer::U8(orig_data), ImageBuffer::U8(dec_data)) =
+        (&original.buffer, &decoded.buffer) {
+        for i in 0..32 * 32 * 4 {
+            assert_eq!(
+                orig_data[i], dec_data[i],
+                "Pixel mismatch at index {} (expected {}, got {})",
+                i, orig_data[i], dec_data[i]
+            );
+        }
+    } else {
+        panic!("Expected U8 buffers");
+    }
+
+    println!("✓ Lossless roundtrip: RGBA (with alpha) perfect reconstruction");
+}
+
+#[test]
+fn test_lossless_roundtrip_rgba_16bit() {
+    // Test RGBA 16-bit lossless encoding with alpha channel
+    let dimensions = Dimensions::new(24, 24);
+    let mut original = Image::new(
+        dimensions,
+        ColorChannels::RGBA,
+        PixelType::U16,
+        ColorEncoding::SRGB,
+    )
+    .unwrap();
+
+    // Fill with pattern including full 16-bit alpha range
+    if let ImageBuffer::U16(ref mut data) = original.buffer {
+        for y in 0..24 {
+            for x in 0..24 {
+                let idx = (y * 24 + x) * 4;
+                data[idx] = ((x * 2731) % 65536) as u16;        // R
+                data[idx + 1] = ((y * 4909) % 65536) as u16;    // G
+                data[idx + 2] = ((x + y) * 1823 % 65536) as u16; // B
+                data[idx + 3] = ((x * y + x) % 65536) as u16;   // A (full 16-bit range)
+            }
+        }
+    }
+
+    // Encode lossless
+    let options = EncoderOptions::default().lossless(true);
+    let mut encoder = JxlEncoder::new(options);
+    let mut encoded = Vec::new();
+    encoder.encode(&original, &mut encoded).unwrap();
+
+    println!("RGBA 16-bit encoded to {} bytes", encoded.len());
+
+    // Decode
+    let mut decoder = JxlDecoder::new();
+    let decoded = decoder.decode(encoded.as_slice()).unwrap();
+
+    // Verify perfect reconstruction
+    if let (ImageBuffer::U16(orig_data), ImageBuffer::U16(dec_data)) =
+        (&original.buffer, &decoded.buffer) {
+        for i in 0..24 * 24 * 4 {
+            assert_eq!(
+                orig_data[i], dec_data[i],
+                "Pixel mismatch at index {} (expected {}, got {})",
+                i, orig_data[i], dec_data[i]
+            );
+        }
+    } else {
+        panic!("Expected U16 buffers");
+    }
+
+    println!("✓ Lossless roundtrip: RGBA 16-bit (with alpha) perfect reconstruction");
+}

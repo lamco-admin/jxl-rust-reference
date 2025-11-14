@@ -300,11 +300,13 @@ impl JxlDecoder {
         // Read bit depth (4 bits: 0-15 representing 1-16 bits)
         let bit_depth = (reader.read_bits(4)? + 1) as usize;
 
-        // Create modular image for reconstruction with appropriate bit depth
-        let mut modular_img = ModularImage::new(width, height, num_channels.min(3), bit_depth as u8);
+        // Create modular image for reconstruction with appropriate bit depth (including alpha if present)
+        let mut modular_img = ModularImage::new(width, height, num_channels, bit_depth as u8);
 
-        // Decode each channel (in YCoCg space)
-        for ch in 0..num_channels.min(3) {
+        // Decode each channel (YCoCg + alpha if present)
+        // First 3 channels are RGB (in YCoCg space), 4th is alpha (if present)
+        let num_color_channels = num_channels.min(3);
+        for ch in 0..num_channels {
             // Decode residuals with ANS
             let residuals = self.decode_residuals_ans(reader)?;
 
@@ -320,23 +322,27 @@ impl JxlDecoder {
             modular_img.inverse_predictor(ch, Predictor::Gradient, &residuals)?;
         }
 
-        // Remove bias from Co and Cg channels (undo encoder bias)
-        // 8-bit: Co/Cg: 0-510 → subtract 255 → -255 to 255
-        // 16-bit: Co/Cg: 0-131070 → subtract 65535 → -65535 to 65535
+        // Apply inverse RCT to convert YCoCg back to RGB (if RGB channels present)
         let max_value = (1 << bit_depth) - 1;
-        for i in 0..modular_img.data[1].len() {
-            modular_img.data[1][i] -= max_value;  // Co offset
-            modular_img.data[2][i] -= max_value;  // Cg offset
-        }
-
-        // Apply inverse RCT to convert YCoCg back to RGB
         let mut rgb_channels = vec![Vec::new(); 3];
-        inverse_rct(
-            &modular_img.data[0], // Y
-            &modular_img.data[1], // Co
-            &modular_img.data[2], // Cg
-            &mut rgb_channels,
-        );
+
+        if num_channels >= 3 {
+            // Remove bias from Co and Cg channels (undo encoder bias)
+            // 8-bit: Co/Cg: 0-510 → subtract 255 → -255 to 255
+            // 16-bit: Co/Cg: 0-131070 → subtract 65535 → -65535 to 65535
+            for i in 0..modular_img.data[1].len() {
+                modular_img.data[1][i] -= max_value;  // Co offset
+                modular_img.data[2][i] -= max_value;  // Cg offset
+            }
+
+            // Apply inverse RCT
+            inverse_rct(
+                &modular_img.data[0], // Y
+                &modular_img.data[1], // Co
+                &modular_img.data[2], // Cg
+                &mut rgb_channels,
+            );
+        }
 
         // Convert to target pixel format
         match &mut image.buffer {
@@ -371,22 +377,27 @@ impl JxlDecoder {
             }
         }
 
-        // Decode alpha channel if present
+        // Copy alpha channel if present (already decoded in modular_img)
         if num_channels == 4 {
             match &mut image.buffer {
                 ImageBuffer::U8(buffer) => {
                     for i in 0..width * height {
-                        buffer[i * 4 + 3] = reader.read_bits(8)? as u8;
+                        let val = modular_img.data[3][i].clamp(0, 255) as u8;
+                        buffer[i * 4 + 3] = val;
                     }
                 }
                 ImageBuffer::U16(buffer) => {
+                    let output_max = if bit_depth == 16 { 65535 } else { (1 << bit_depth) - 1 };
                     for i in 0..width * height {
-                        buffer[i * 4 + 3] = (reader.read_bits(8)? as u16) * 256;
+                        let val = modular_img.data[3][i].clamp(0, output_max) as u16;
+                        buffer[i * 4 + 3] = val;
                     }
                 }
                 ImageBuffer::F32(buffer) => {
+                    let norm = max_value as f32;
                     for i in 0..width * height {
-                        buffer[i * 4 + 3] = (reader.read_bits(8)? as f32) / 255.0;
+                        let val = (modular_img.data[3][i].clamp(0, max_value) as f32) / norm;
+                        buffer[i * 4 + 3] = val;
                     }
                 }
             }

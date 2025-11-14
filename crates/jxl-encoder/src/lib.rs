@@ -7,7 +7,7 @@ use jxl_headers::{Container, JxlImageMetadata, CODESTREAM_SIGNATURE};
 use jxl_transform::{
     dct_channel, generate_xyb_quant_tables, quantize_channel, separate_dc_ac, zigzag_scan_channel,
     AdaptiveQuantMap, adaptive_quantize, BlockComplexity, BLOCK_SIZE,
-    ModularImage, Predictor, apply_rct,
+    ModularImage, Predictor, apply_rct, MATreeNode, compute_context_properties,
 };
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -130,11 +130,16 @@ impl JxlEncoder {
                 PixelType::F32 => 32,
             };
 
-            let metadata = JxlImageMetadata::for_rgb_image(
+            let mut metadata = JxlImageMetadata::for_rgb_image(
                 image.width(),
                 image.height(),
                 bits_per_sample
             );
+
+            // If RGBA, set num_extra_channels to 1 (for alpha)
+            if image.channel_count() == 4 {
+                metadata.num_extra_channels = 1;
+            }
 
             // Write spec-compliant metadata
             metadata.encode(&mut bit_writer)?;
@@ -339,13 +344,13 @@ impl JxlEncoder {
         // Write bit depth (4 bits: 0-15 representing 1-16 bits)
         writer.write_bits((bit_depth - 1) as u64, 4)?;
 
-        // Create modular image with appropriate bit depth
-        let mut modular_img = ModularImage::new(width, height, num_channels.min(3), bit_depth);
+        // Create modular image with appropriate bit depth (include alpha if present)
+        let mut modular_img = ModularImage::new(width, height, num_channels, bit_depth);
 
-        // Copy image data to modular format
+        // Copy image data to modular format (including alpha if present)
         match &image.buffer {
             ImageBuffer::U8(buffer) => {
-                for ch in 0..num_channels.min(3) {
+                for ch in 0..num_channels {
                     for i in 0..width * height {
                         modular_img.data[ch][i] = buffer[i * num_channels + ch] as i32;
                     }
@@ -353,7 +358,7 @@ impl JxlEncoder {
             }
             ImageBuffer::U16(buffer) => {
                 // Full 16-bit support with HybridUint encoding
-                for ch in 0..num_channels.min(3) {
+                for ch in 0..num_channels {
                     for i in 0..width * height {
                         modular_img.data[ch][i] = buffer[i * num_channels + ch] as i32;
                     }
@@ -361,7 +366,7 @@ impl JxlEncoder {
             }
             ImageBuffer::F32(buffer) => {
                 // Quantize float to 8-bit
-                for ch in 0..num_channels.min(3) {
+                for ch in 0..num_channels {
                     for i in 0..width * height {
                         let val = (buffer[i * num_channels + ch] * 255.0).clamp(0.0, 255.0);
                         modular_img.data[ch][i] = val as i32;
@@ -390,36 +395,13 @@ impl JxlEncoder {
             }
         }
 
-        // Apply predictive coding to each channel
-        for ch in 0..num_channels.min(3) {
+        // Apply predictive coding to each channel (including alpha if present)
+        for ch in 0..num_channels {
             let mut residuals = Vec::new();
             modular_img.apply_predictor(ch, Predictor::Gradient, &mut residuals)?;
 
             // Encode residuals with ANS compression
             self.encode_residuals_ans(&residuals, writer)?;
-        }
-
-        // Encode alpha channel if present
-        if num_channels == 4 {
-            // For now, encode alpha directly (TODO: use modular mode)
-            match &image.buffer {
-                ImageBuffer::U8(buffer) => {
-                    for i in 0..width * height {
-                        writer.write_bits(buffer[i * 4 + 3] as u64, 8)?;
-                    }
-                }
-                ImageBuffer::U16(buffer) => {
-                    for i in 0..width * height {
-                        writer.write_bits((buffer[i * 4 + 3] / 256) as u64, 8)?;
-                    }
-                }
-                ImageBuffer::F32(buffer) => {
-                    for i in 0..width * height {
-                        let val = (buffer[i * 4 + 3] * 255.0).clamp(0.0, 255.0) as u64;
-                        writer.write_bits(val, 8)?;
-                    }
-                }
-            }
         }
 
         Ok(())
