@@ -638,7 +638,7 @@ impl JxlEncoder {
                 let pass_ac = self.extract_ac_pass(&ac_coeffs, start_coeff, end_coeff);
 
                 // Encode AC pass
-                self.encode_ac_pass(&pass_ac, &context_model, blocks_x, start_coeff, writer)?;
+                self.encode_ac_pass(&pass_ac, &context_model, blocks_x, start_coeff, coeff_count, writer)?;
             }
         }
 
@@ -710,6 +710,7 @@ impl JxlEncoder {
         context_model: &ContextModel,
         blocks_x: usize,
         start_coeff: usize,
+        coeffs_per_block: usize,
         writer: &mut BitWriter<W>,
     ) -> JxlResult<()> {
         let non_zero_count = ac_coeffs.iter().filter(|&&c| c != 0).count();
@@ -733,9 +734,10 @@ impl JxlEncoder {
             if coeff != 0 {
                 let symbol = self.coeff_to_symbol(coeff);
 
-                // Map position to original coefficient index
-                let block_idx = pos / ac_coeffs.len().max(1);
-                let coeff_idx_in_pass = pos % ac_coeffs.len().max(1);
+                // Map position to block index and coefficient index within pass
+                let block_idx = pos / coeffs_per_block;
+                let coeff_idx_in_pass = pos % coeffs_per_block;
+                // Add 1 because DC is at index 0, AC starts at index 1
                 let coeff_idx_in_block = start_coeff + coeff_idx_in_pass + 1;
 
                 let block_x = block_idx % blocks_x;
