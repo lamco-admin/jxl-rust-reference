@@ -3,7 +3,7 @@
 [![Rust CI](https://github.com/lamco-admin/jxl-rust-reference/workflows/Rust%20CI/badge.svg)](https://github.com/lamco-admin/jxl-rust-reference/actions)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-107%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-137%20passing-brightgreen.svg)](#testing)
 
 A comprehensive educational reference implementation of JPEG XL in Rust, demonstrating modern codec architecture and compression techniques.
 
@@ -35,12 +35,12 @@ Build a **world-class educational reference implementation** of JPEG XL that:
 
 | Metric | Value | Status |
 |--------|-------|--------|
-| **Lines of Code** | ~8,420 lines | Core implementation complete |
-| **Test Coverage** | 107 tests passing | 89 unit + 18 edge cases |
+| **Lines of Code** | ~9,600 lines | Core + lossless complete |
+| **Test Coverage** | 137 tests passing | 107 unit + 12 lossless + 18 edge cases |
 | **PSNR Quality** | 23-39 dB | Production-grade (Q50-Q100) |
-| **Compression** | 0.23 BPP | Competitive baseline |
+| **Compression** | 0.23 BPP lossy, varies lossless | Competitive baseline |
 | **Parallelization** | 2.3x speedup | Using Rayon |
-| **Spec Coverage** | ~65% | Core features + advanced compression |
+| **Spec Coverage** | ~70% | Core + lossless + progressive |
 
 ---
 
@@ -58,7 +58,7 @@ Build a **world-class educational reference implementation** of JPEG XL that:
   - 4-band context modeling (DC, Low, Mid, High frequency)
   - Per-block quantization scaling [0.5, 2.0]
   - Adaptive quantization map serialization
-  - Symbol clipping and alphabet management (4096 symbols)
+  - HybridUint encoding (JPEG XL spec compliant, 512-symbol ANS alphabet)
 
 - **SIMD Infrastructure**
   - CPU feature detection (SSE2, AVX2, NEON, scalar)
@@ -76,17 +76,30 @@ Build a **world-class educational reference implementation** of JPEG XL that:
   - Non-8x8-aligned image support
   - Extreme dimension handling (1x1 to 1024x1024+)
 
-### 🏗️ Infrastructure Ready (Not Connected)
-- Progressive decoding framework (449 lines)
-- Modular mode for lossless (434 lines)
-- Animation metadata (376 lines)
+- **Lossless Mode** ✅ NEW
+  - Full 8-bit and 16-bit lossless encoding/decoding
+  - HybridUint encoding for large symbols (JPEG XL spec compliant)
+  - Reversible Color Transform (YCoCg)
+  - Gradient predictor with ANS compression
+  - Perfect reconstruction verified (12 comprehensive tests)
+  - Competitive compression ratios
+
+- **Progressive Encoding/Decoding** ✅ NEW
+  - Multi-pass progressive rendering (5 passes: DC + 4 AC)
+  - Quality levels: 20% → 40% → 60% → 80% → 100%
+  - Full roundtrip compatibility (7 tests passing)
+  - Scan configuration support
+
+### 🏗️ Infrastructure Ready (Partial Integration)
+- Animation metadata structures (376 lines)
 - ICC profile structures
+- Modular mode with 8 predictors (lossless path active)
 
 ### 📋 Planned
-- SIMD optimization (2-4x speedup)
-- Better quantization tables (+15-25 dB PSNR)
+- SIMD optimization (2-4x speedup, infrastructure ready)
+- MA tree context modeling for lossless (better compression)
 - Memory optimization (2-3x reduction)
-- Progressive/modular integration
+- Conformance testing against libjxl reference
 - VarDCT, patches, splines, noise synthesis
 
 See [ROADMAP.md](ROADMAP.md) for detailed development plan.
@@ -128,13 +141,15 @@ cd jxl-rust-reference
 # Build the project
 cargo build --release
 
-# Run tests (107 tests)
+# Run tests (137 tests)
 cargo test --all
 
 # Run specific test suites
 cargo test -p jxl-transform     # DCT, quantization tests
-cargo test -p jxl-bitstream     # ANS, context modeling tests
+cargo test -p jxl-bitstream     # ANS, context modeling, HybridUint tests
 cargo test --test edge_cases    # Edge case tests (18 tests)
+cargo test --test lossless_test # Lossless roundtrip tests (12 tests)
+cargo test --test progressive_test # Progressive encoding tests (7 tests)
 
 # Run benchmarks
 cargo bench                      # All benchmarks
