@@ -7,6 +7,7 @@ use jxl_headers::{Container, JxlImageMetadata, CODESTREAM_SIGNATURE};
 use jxl_transform::{
     dct_channel, generate_xyb_quant_tables, quantize_channel, separate_dc_ac, zigzag_scan_channel,
     AdaptiveQuantMap, adaptive_quantize, BlockComplexity, BLOCK_SIZE,
+    ModularImage, Predictor, apply_rct,
 };
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -173,6 +174,11 @@ impl JxlEncoder {
             ));
         }
 
+        // Check if lossless mode is enabled
+        if self.options.lossless {
+            return self.encode_frame_lossless(image, width, height, num_channels, writer);
+        }
+
         // Step 1: Convert to f32 and normalize to [0, 1]
         let linear_rgb = self.convert_to_linear_f32(image)?;
 
@@ -297,6 +303,113 @@ impl JxlEncoder {
         // Step 8: If there's an alpha channel, encode it separately
         if num_channels == 4 {
             self.encode_alpha_channel(&linear_rgb, width, height, writer)?;
+        }
+
+        Ok(())
+    }
+
+    /// Encode frame in lossless modular mode
+    fn encode_frame_lossless<W: Write>(
+        &mut self,
+        image: &Image,
+        width: usize,
+        height: usize,
+        num_channels: usize,
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        // Lossless encoding uses modular mode:
+        // 1. Convert image to ModularImage (integer samples)
+        // 2. Apply reversible color transform (RCT) for RGB
+        // 3. Apply predictive coding (Gradient predictor)
+        // 4. Encode residuals with ANS
+
+        // Create modular image from input
+        let mut modular_img = ModularImage::new(width, height, num_channels.min(3), 8);
+
+        // Copy image data to modular format
+        match &image.buffer {
+            ImageBuffer::U8(buffer) => {
+                for ch in 0..num_channels.min(3) {
+                    for i in 0..width * height {
+                        modular_img.data[ch][i] = buffer[i * num_channels + ch] as i32;
+                    }
+                }
+            }
+            ImageBuffer::U16(buffer) => {
+                // Scale 16-bit to 8-bit for now (TODO: support 16-bit properly)
+                for ch in 0..num_channels.min(3) {
+                    for i in 0..width * height {
+                        modular_img.data[ch][i] = (buffer[i * num_channels + ch] / 256) as i32;
+                    }
+                }
+            }
+            ImageBuffer::F32(buffer) => {
+                // Quantize float to 8-bit
+                for ch in 0..num_channels.min(3) {
+                    for i in 0..width * height {
+                        let val = (buffer[i * num_channels + ch] * 255.0).clamp(0.0, 255.0);
+                        modular_img.data[ch][i] = val as i32;
+                    }
+                }
+            }
+        }
+
+        // Write lossless mode marker (1 bit)
+        writer.write_bits(1, 1)?;
+
+        // Write modular mode marker (1 bit)
+        writer.write_bits(1, 1)?;
+
+        // Apply RCT (reversible color transform) if RGB
+        if num_channels >= 3 {
+            let mut ycocg = vec![Vec::new(); 3];
+            apply_rct(&modular_img.data[0], &modular_img.data[1], &modular_img.data[2], &mut ycocg);
+            modular_img.data[0] = ycocg[0].clone();
+            modular_img.data[1] = ycocg[1].clone();
+            modular_img.data[2] = ycocg[2].clone();
+        }
+
+        // Apply predictive coding to each channel
+        for ch in 0..num_channels.min(3) {
+            let mut residuals = Vec::new();
+            modular_img.apply_predictor(ch, Predictor::Gradient, &mut residuals)?;
+
+            // Encode residuals with simple run-length + ANS
+            // For now, write raw residuals (TODO: proper ANS encoding)
+            writer.write_u32(residuals.len() as u32, 32)?;
+
+            for &residual in &residuals {
+                // Write residual as signed value (zigzag encoding)
+                let symbol = if residual >= 0 {
+                    (residual as u32) * 2
+                } else {
+                    ((-residual) as u32) * 2 - 1
+                };
+                writer.write_u32(symbol, 16)?;
+            }
+        }
+
+        // Encode alpha channel if present
+        if num_channels == 4 {
+            // For now, encode alpha directly (TODO: use modular mode)
+            match &image.buffer {
+                ImageBuffer::U8(buffer) => {
+                    for i in 0..width * height {
+                        writer.write_bits(buffer[i * 4 + 3] as u64, 8)?;
+                    }
+                }
+                ImageBuffer::U16(buffer) => {
+                    for i in 0..width * height {
+                        writer.write_bits((buffer[i * 4 + 3] / 256) as u64, 8)?;
+                    }
+                }
+                ImageBuffer::F32(buffer) => {
+                    for i in 0..width * height {
+                        let val = (buffer[i * 4 + 3] * 255.0).clamp(0.0, 255.0) as u64;
+                        writer.write_bits(val, 8)?;
+                    }
+                }
+            }
         }
 
         Ok(())
