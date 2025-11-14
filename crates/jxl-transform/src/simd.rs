@@ -215,7 +215,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TODO: Fix IDCT SIMD normalization (currently off by 2x)
     fn test_idct_simd_correctness() {
         let input = [
             10.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02,
@@ -679,7 +678,8 @@ unsafe fn idct8x8_avx2(input: &[f32; 64], output: &mut [f32; 64]) {
 
                 let mut freq_arr = [0.0f32; 8];
                 _mm256_storeu_ps(&mut freq_arr[0], freq);
-                sum += cu * freq_arr[u] * angle.cos() * C4;
+                // For separable IDCT, use sqrt(2/N) normalization for each 1D pass
+                sum += cu * freq_arr[u] * angle.cos() * (2.0f32 / 8.0).sqrt();
             }
 
             temp[row_start + x] = sum;
@@ -708,7 +708,8 @@ unsafe fn idct8x8_avx2(input: &[f32; 64], output: &mut [f32; 64]) {
 
                 let mut freq_arr = [0.0f32; 8];
                 _mm256_storeu_ps(&mut freq_arr[0], freq);
-                sum += cu * freq_arr[u] * angle.cos() * C4;
+                // For separable IDCT, use sqrt(2/N) normalization for each 1D pass
+                sum += cu * freq_arr[u] * angle.cos() * (2.0f32 / 8.0).sqrt();
             }
 
             temp[row_start + x] = sum;
