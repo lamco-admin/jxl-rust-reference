@@ -2,7 +2,7 @@
 
 pub mod progressive;
 
-use jxl_bitstream::{AnsDistribution, RansDecoder, BitReader, ContextModel, Context};
+use jxl_bitstream::{AnsDistribution, RansDecoder, BitReader, ContextModel, Context, decode_hybrid_uint};
 use jxl_color::{linear_f32_to_srgb_u8, xyb_to_rgb};
 use jxl_core::*;
 use jxl_headers::{Container, JxlHeader, JxlImageMetadata, CODESTREAM_SIGNATURE};
@@ -297,8 +297,11 @@ impl JxlDecoder {
             ));
         }
 
-        // Create modular image for reconstruction
-        let mut modular_img = ModularImage::new(width, height, num_channels.min(3), 8);
+        // Read bit depth (4 bits: 0-15 representing 1-16 bits)
+        let bit_depth = (reader.read_bits(4)? + 1) as usize;
+
+        // Create modular image for reconstruction with appropriate bit depth
+        let mut modular_img = ModularImage::new(width, height, num_channels.min(3), bit_depth as u8);
 
         // Decode each channel (in YCoCg space)
         for ch in 0..num_channels.min(3) {
@@ -318,12 +321,12 @@ impl JxlDecoder {
         }
 
         // Remove bias from Co and Cg channels (undo encoder bias)
-        // Co: 0-510 → subtract 255 → -255 to 255
-        // Cg: 0-510 → subtract 255 → -255 to 255
-        // This reverses the bias applied by the encoder
+        // 8-bit: Co/Cg: 0-510 → subtract 255 → -255 to 255
+        // 16-bit: Co/Cg: 0-131070 → subtract 65535 → -65535 to 65535
+        let max_value = (1 << bit_depth) - 1;
         for i in 0..modular_img.data[1].len() {
-            modular_img.data[1][i] -= 255;  // Co offset
-            modular_img.data[2][i] -= 255;  // Cg offset
+            modular_img.data[1][i] -= max_value;  // Co offset
+            modular_img.data[2][i] -= max_value;  // Cg offset
         }
 
         // Apply inverse RCT to convert YCoCg back to RGB
@@ -336,10 +339,9 @@ impl JxlDecoder {
         );
 
         // Convert to target pixel format
-        // Note: RGB values should be in [0, 255] range after correct RCT
-        // Clamping is used as a safety measure but shouldn't be needed for valid data
         match &mut image.buffer {
             ImageBuffer::U8(buffer) => {
+                // For 8-bit output, clamp to [0, 255]
                 for ch in 0..3 {
                     for i in 0..width * height {
                         let val = rgb_channels[ch][i].clamp(0, 255) as u8;
@@ -348,17 +350,21 @@ impl JxlDecoder {
                 }
             }
             ImageBuffer::U16(buffer) => {
+                // For 16-bit output, use appropriate range based on bit depth
+                let output_max = if bit_depth == 16 { 65535 } else { (1 << bit_depth) - 1 };
                 for ch in 0..3 {
                     for i in 0..width * height {
-                        let val = (rgb_channels[ch][i].clamp(0, 255) * 256) as u16;
+                        let val = rgb_channels[ch][i].clamp(0, output_max) as u16;
                         buffer[i * num_channels + ch] = val;
                     }
                 }
             }
             ImageBuffer::F32(buffer) => {
+                // For float output, normalize by max_value
+                let norm = max_value as f32;
                 for ch in 0..3 {
                     for i in 0..width * height {
-                        let val = (rgb_channels[ch][i].clamp(0, 255) as f32) / 255.0;
+                        let val = (rgb_channels[ch][i].clamp(0, max_value) as f32) / norm;
                         buffer[i * num_channels + ch] = val;
                     }
                 }
@@ -409,18 +415,33 @@ impl JxlDecoder {
             ans_data.push(reader.read_bits(8)? as u8);
         }
 
-        // Decode symbols with ANS
-        let mut decoder = RansDecoder::new(ans_data)?;
-        let mut symbols = Vec::with_capacity(num_symbols);
+        // Decode all tokens with ANS
+        let mut ans_decoder = RansDecoder::new(ans_data)?;
+        let mut tokens = Vec::with_capacity(num_symbols);
 
         for _ in 0..num_symbols {
-            let symbol = decoder.decode_symbol(&distribution)? as u32;
-            symbols.push(symbol);
+            let token = ans_decoder.decode_symbol(&distribution)? as u32;
+            tokens.push(token);
         }
 
         // Note: rANS decodes in LIFO order, which reverses the encoding order.
-        // Since the encoder already reverses symbols before encoding,
-        // the decoded order is already correct - no need to reverse again!
+        // Since the encoder already reverses tokens before encoding,
+        // the decoded token order is already correct - no need to reverse!
+
+        // Reconstruct symbols from tokens and raw bits
+        let mut symbols = Vec::with_capacity(num_symbols);
+        for &token in &tokens {
+            let symbol = if token <= 255 {
+                // Direct value
+                token
+            } else {
+                // Split encoding - reconstruct from token and raw bits
+                let n = (token - 256) + 8;
+                let raw_bits = reader.read_bits(n as usize)? as u32;
+                (1 << n) | raw_bits
+            };
+            symbols.push(symbol);
+        }
 
         // Convert symbols back to residuals (inverse zigzag encoding)
         let residuals: Vec<i32> = symbols

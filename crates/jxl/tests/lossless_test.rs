@@ -378,3 +378,162 @@ fn test_lossless_roundtrip_all_values() {
 
     println!("✓ Lossless roundtrip: all values perfect reconstruction");
 }
+
+#[test]
+fn test_lossless_roundtrip_16bit_gradient() {
+    // Test 16-bit lossless roundtrip with gradient pattern
+    let dimensions = Dimensions::new(32, 32);
+    let mut original = Image::new(
+        dimensions,
+        ColorChannels::RGB,
+        PixelType::U16,
+        ColorEncoding::SRGB,
+    )
+    .unwrap();
+
+    // Fill with 16-bit gradient pattern
+    if let ImageBuffer::U16(ref mut data) = original.buffer {
+        for y in 0..32 {
+            for x in 0..32 {
+                let idx = (y * 32 + x) * 3;
+                data[idx] = (x * 2048) as u16;          // R: 0-63488
+                data[idx + 1] = (y * 2048) as u16;      // G: 0-63488
+                data[idx + 2] = 32768;                  // B: constant mid-value
+            }
+        }
+    }
+
+    // Encode lossless
+    let options = EncoderOptions::default().lossless(true);
+    let mut encoder = JxlEncoder::new(options);
+    let mut encoded = Vec::new();
+    encoder.encode(&original, &mut encoded).unwrap();
+
+    println!("16-bit gradient encoded to {} bytes", encoded.len());
+
+    // Decode
+    let mut decoder = JxlDecoder::new();
+    let decoded = decoder.decode(encoded.as_slice()).unwrap();
+
+    // Verify perfect reconstruction
+    if let (ImageBuffer::U16(orig_data), ImageBuffer::U16(dec_data)) =
+        (&original.buffer, &decoded.buffer) {
+        for i in 0..32 * 32 * 3 {
+            assert_eq!(
+                orig_data[i], dec_data[i],
+                "Pixel mismatch at index {} (expected {}, got {})",
+                i, orig_data[i], dec_data[i]
+            );
+        }
+    } else {
+        panic!("Expected U16 buffers");
+    }
+
+    println!("✓ Lossless roundtrip: 16-bit gradient perfect reconstruction");
+}
+
+#[test]
+fn test_lossless_roundtrip_16bit_extremes() {
+    // Test 16-bit lossless with extreme values (0, 65535)
+    let dimensions = Dimensions::new(24, 24);
+    let mut original = Image::new(
+        dimensions,
+        ColorChannels::RGB,
+        PixelType::U16,
+        ColorEncoding::SRGB,
+    )
+    .unwrap();
+
+    // Fill with checkerboard of extreme 16-bit values
+    if let ImageBuffer::U16(ref mut data) = original.buffer {
+        for y in 0..24 {
+            for x in 0..24 {
+                let idx = (y * 24 + x) * 3;
+                let is_black = (x + y) % 2 == 0;
+                data[idx] = if is_black { 0 } else { 65535 };     // R
+                data[idx + 1] = if is_black { 65535 } else { 0 }; // G
+                data[idx + 2] = if is_black { 0 } else { 65535 }; // B
+            }
+        }
+    }
+
+    // Encode lossless
+    let options = EncoderOptions::default().lossless(true);
+    let mut encoder = JxlEncoder::new(options);
+    let mut encoded = Vec::new();
+    encoder.encode(&original, &mut encoded).unwrap();
+
+    println!("16-bit extremes encoded to {} bytes", encoded.len());
+
+    // Decode
+    let mut decoder = JxlDecoder::new();
+    let decoded = decoder.decode(encoded.as_slice()).unwrap();
+
+    // Verify perfect reconstruction
+    if let (ImageBuffer::U16(orig_data), ImageBuffer::U16(dec_data)) =
+        (&original.buffer, &decoded.buffer) {
+        for i in 0..24 * 24 * 3 {
+            assert_eq!(
+                orig_data[i], dec_data[i],
+                "Pixel mismatch at index {} (expected {}, got {})",
+                i, orig_data[i], dec_data[i]
+            );
+        }
+    } else {
+        panic!("Expected U16 buffers");
+    }
+
+    println!("✓ Lossless roundtrip: 16-bit extremes perfect reconstruction");
+}
+
+#[test]
+fn test_lossless_roundtrip_16bit_high_frequency() {
+    // Test 16-bit with high-frequency pattern (challenging for predictive coding)
+    let dimensions = Dimensions::new(32, 32);
+    let mut original = Image::new(
+        dimensions,
+        ColorChannels::RGB,
+        PixelType::U16,
+        ColorEncoding::SRGB,
+    )
+    .unwrap();
+
+    // Fill with pseudo-random 16-bit pattern
+    if let ImageBuffer::U16(ref mut data) = original.buffer {
+        for i in 0..32 * 32 * 3 {
+            // Use different seeds for different channels
+            let channel = i % 3;
+            let pixel = i / 3;
+            // Generate values across full 16-bit range
+            data[i] = ((pixel * 2731 + channel * 4909) % 65536) as u16;
+        }
+    }
+
+    // Encode lossless
+    let options = EncoderOptions::default().lossless(true);
+    let mut encoder = JxlEncoder::new(options);
+    let mut encoded = Vec::new();
+    encoder.encode(&original, &mut encoded).unwrap();
+
+    println!("16-bit high frequency encoded to {} bytes", encoded.len());
+
+    // Decode
+    let mut decoder = JxlDecoder::new();
+    let decoded = decoder.decode(encoded.as_slice()).unwrap();
+
+    // Verify perfect reconstruction
+    if let (ImageBuffer::U16(orig_data), ImageBuffer::U16(dec_data)) =
+        (&original.buffer, &decoded.buffer) {
+        for i in 0..32 * 32 * 3 {
+            assert_eq!(
+                orig_data[i], dec_data[i],
+                "Pixel mismatch at index {} (expected {}, got {})",
+                i, orig_data[i], dec_data[i]
+            );
+        }
+    } else {
+        panic!("Expected U16 buffers");
+    }
+
+    println!("✓ Lossless roundtrip: 16-bit high frequency perfect reconstruction");
+}
