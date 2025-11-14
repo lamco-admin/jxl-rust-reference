@@ -190,6 +190,56 @@ impl AdaptiveQuantMap {
     pub fn blocks_y(&self) -> usize {
         self.blocks_y
     }
+
+    /// Serialize the AQ map to a compact format
+    /// Returns quantized scales as u8 values (scale * 51.0, clamped to 0-255)
+    /// This allows scales [0.5, 2.0] to be represented with ~1.5% precision
+    pub fn serialize(&self) -> Vec<u8> {
+        self.scales
+            .iter()
+            .map(|&scale| {
+                // Map [0.5, 2.0] to [0, 255]
+                // 0.5 → 0, 1.0 → 85, 2.0 → 255
+                let quantized = ((scale - 0.5) * 170.0).round();
+                quantized.clamp(0.0, 255.0) as u8
+            })
+            .collect()
+    }
+
+    /// Deserialize AQ map from compact format
+    pub fn deserialize(
+        serialized: &[u8],
+        width: usize,
+        height: usize,
+        base_quality: f32,
+    ) -> JxlResult<Self> {
+        let blocks_x = (width + 7) / 8;
+        let blocks_y = (height + 7) / 8;
+
+        if serialized.len() != blocks_x * blocks_y {
+            return Err(jxl_core::JxlError::InvalidParameter(format!(
+                "AQ map size mismatch: expected {}, got {}",
+                blocks_x * blocks_y,
+                serialized.len()
+            )));
+        }
+
+        let scales = serialized
+            .iter()
+            .map(|&quantized| {
+                // Map [0, 255] back to [0.5, 2.0]
+                let scale = (quantized as f32 / 170.0) + 0.5;
+                scale.clamp(0.5, 2.0)
+            })
+            .collect();
+
+        Ok(Self {
+            scales,
+            blocks_x,
+            blocks_y,
+            base_quality,
+        })
+    }
 }
 
 /// Apply adaptive quantization to a set of DCT coefficients
