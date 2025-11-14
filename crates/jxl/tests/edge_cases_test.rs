@@ -47,7 +47,7 @@ fn create_test_image(width: u32, height: u32, channels: ColorChannels) -> Image 
 /// Helper for roundtrip testing
 fn roundtrip_test(image: &Image, min_psnr: f64) -> Result<(), String> {
     // Encode
-    let encoder = JxlEncoder::default();
+    let mut encoder = JxlEncoder::default();
     let mut encoded = Vec::new();
     encoder
         .encode(image, &mut encoded)
@@ -254,7 +254,7 @@ fn test_error_handling_truncated_bitstream() {
     println!("Testing error handling with truncated bitstream");
     // Encode a valid image
     let image = create_test_image(64, 64, ColorChannels::RGB);
-    let encoder = JxlEncoder::default();
+    let mut encoder = JxlEncoder::default();
     let mut encoded = Vec::new();
     encoder.encode(&image, &mut encoded).unwrap();
 
@@ -270,7 +270,7 @@ fn test_error_handling_truncated_bitstream() {
 #[test]
 fn test_multiple_sequential_encodes() {
     println!("Testing multiple sequential encodes");
-    let encoder = JxlEncoder::default();
+    let mut encoder = JxlEncoder::default();
 
     for size in [32, 64, 128] {
         let image = create_test_image(size, size, ColorChannels::RGB);
@@ -286,7 +286,7 @@ fn test_multiple_sequential_decodes() {
     println!("Testing multiple sequential decodes");
 
     // Encode test images
-    let encoder = JxlEncoder::default();
+    let mut encoder = JxlEncoder::default();
     let mut encoded_images = Vec::new();
 
     for size in [32, 64, 128] {
@@ -311,7 +311,7 @@ fn test_memory_stress_large_image() {
     // Using 1024x1024 instead of 2048x2048 to avoid bitstream issues with very large images
     let image = create_test_image(1024, 1024, ColorChannels::RGB);
 
-    let encoder = JxlEncoder::default();
+    let mut encoder = JxlEncoder::default();
     let mut encoded = Vec::new();
     encoder.encode(&image, &mut encoded)
         .expect("Failed to encode large image");

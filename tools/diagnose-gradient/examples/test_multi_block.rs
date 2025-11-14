@@ -51,7 +51,7 @@ fn calculate_psnr(img1: &Image, img2: &Image) -> f64 {
 fn test_size(width: u32, height: u32) {
     let original = create_gradient(width, height);
 
-    let encoder = JxlEncoder::new(EncoderOptions::default().quality(85.0));
+    let mut encoder = JxlEncoder::new(EncoderOptions::default().quality(85.0));
     let mut encoded = Vec::new();
     encoder.encode(&original, Cursor::new(&mut encoded)).expect("encode failed");
 

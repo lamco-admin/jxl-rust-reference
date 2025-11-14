@@ -3,12 +3,14 @@
 //! This crate provides the fundamental data structures and types used throughout
 //! the JPEG XL implementation, including image metadata, pixel formats, and error types.
 
+pub mod buffer_pool;
 pub mod consts;
 pub mod error;
 pub mod image;
 pub mod metadata;
 pub mod types;
 
+pub use buffer_pool::*;
 pub use error::{JxlError, JxlResult};
 pub use image::*;
 pub use metadata::*;

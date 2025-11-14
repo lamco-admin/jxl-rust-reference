@@ -65,7 +65,7 @@ fn test_roundtrip_encode_decode() {
     let original = create_test_image(64, 64);
 
     // Encode to bytes
-    let encoder = JxlEncoder::new(EncoderOptions::default().quality(90.0));
+    let mut encoder = JxlEncoder::new(EncoderOptions::default().quality(90.0));
     let mut encoded_data = Vec::new();
     encoder
         .encode(&original, Cursor::new(&mut encoded_data))
@@ -112,7 +112,7 @@ fn test_roundtrip_different_sizes() {
 
         let original = create_test_image(width, height);
 
-        let encoder = JxlEncoder::new(EncoderOptions::default().quality(85.0));
+        let mut encoder = JxlEncoder::new(EncoderOptions::default().quality(85.0));
         let mut encoded_data = Vec::new();
         encoder
             .encode(&original, Cursor::new(&mut encoded_data))
@@ -147,7 +147,7 @@ fn test_roundtrip_different_quality_levels() {
     for quality in quality_levels {
         println!("Testing quality: {}", quality);
 
-        let encoder = JxlEncoder::new(EncoderOptions::default().quality(quality));
+        let mut encoder = JxlEncoder::new(EncoderOptions::default().quality(quality));
         let mut encoded_data = Vec::new();
         encoder
             .encode(&original, Cursor::new(&mut encoded_data))
@@ -203,7 +203,7 @@ fn test_solid_color_image() {
         }
     }
 
-    let encoder = JxlEncoder::new(EncoderOptions::default().quality(90.0));
+    let mut encoder = JxlEncoder::new(EncoderOptions::default().quality(90.0));
     let mut encoded_data = Vec::new();
     encoder
         .encode(&image, Cursor::new(&mut encoded_data))
@@ -259,7 +259,7 @@ fn test_ans_minimal_8x8_single_block() {
     
     // Encode with default settings
     let options = EncoderOptions::default();
-    let encoder = JxlEncoder::new(options);
+    let mut encoder = JxlEncoder::new(options);
     let mut encoded = Vec::new();
     encoder.encode(&image, &mut encoded).expect("Encoding failed");
 
