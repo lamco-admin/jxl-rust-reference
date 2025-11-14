@@ -302,7 +302,7 @@ mod tests {
 
 /// SSE2 8x8 DCT implementation (x86/x86_64)
 ///
-/// Optimized separable DCT implementation using SSE2 intrinsics.
+/// Optimized separable DCT implementation using SSE2 intrinsics with precomputed coefficients.
 /// Uses row-column decomposition with SSE2 vector operations.
 ///
 /// Performance: ~2-3x faster than scalar implementation
@@ -314,70 +314,73 @@ unsafe fn dct8x8_sse2(input: &[f32; 64], output: &mut [f32; 64]) {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
 
-    // DCT coefficients (precomputed for 8-point DCT)
-    const C1: f32 = 0.98078528;  // cos(1*pi/16)
-    const C2: f32 = 0.92387953;  // cos(2*pi/16)
-    const C3: f32 = 0.83146961;  // cos(3*pi/16)
-    const C4: f32 = 0.70710678;  // cos(4*pi/16) = 1/sqrt(2)
-    const C5: f32 = 0.55557023;  // cos(5*pi/16)
-    const C6: f32 = 0.38268343;  // cos(6*pi/16)
-    const C7: f32 = 0.19509032;  // cos(7*pi/16)
+    // Precomputed DCT cosine coefficient matrix (8x8)
+    // DCT_COEFF[u][x] = cos((2*x+1)*u*pi/16) for u,x in [0,7]
+    // Stored in row-major order for cache-friendly access
+    #[rustfmt::skip]
+    const DCT_COEFF: [[f32; 8]; 8] = [
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  // u=0
+        [0.98078528, 0.83146961, 0.55557023, 0.19509032, -0.19509032, -0.55557023, -0.83146961, -0.98078528],  // u=1
+        [0.92387953, 0.38268343, -0.38268343, -0.92387953, -0.92387953, -0.38268343, 0.38268343, 0.92387953],  // u=2
+        [0.83146961, -0.19509032, -0.98078528, -0.55557023, 0.55557023, 0.98078528, 0.19509032, -0.83146961],  // u=3
+        [0.70710678, -0.70710678, -0.70710678, 0.70710678, 0.70710678, -0.70710678, -0.70710678, 0.70710678],  // u=4
+        [0.55557023, -0.98078528, 0.19509032, 0.83146961, -0.83146961, -0.19509032, 0.98078528, -0.55557023],  // u=5
+        [0.38268343, -0.92387953, 0.92387953, -0.38268343, -0.38268343, 0.92387953, -0.92387953, 0.38268343],  // u=6
+        [0.19509032, -0.55557023, 0.83146961, -0.98078528, 0.98078528, -0.83146961, 0.55557023, -0.19509032],  // u=7
+    ];
 
-    // Temporary storage for intermediate results
+    const NORM: f32 = 0.5; // sqrt(2/8) = 0.5
+    const C0: f32 = 0.70710678; // 1/sqrt(2) for u=0 normalization
+
     let mut temp = [0.0f32; 64];
 
-    // Stage 1: 1D DCT on each row using SSE2
+    // Stage 1: 1D DCT on each row
     for i in 0..8 {
         let row_start = i * 8;
 
-        // Load row into SSE2 registers (2x __m128 for 8 floats)
+        // Load input row
         let row_lo = _mm_loadu_ps(&input[row_start]);
         let row_hi = _mm_loadu_ps(&input[row_start + 4]);
 
-        // Perform 1D DCT using butterfly operations
-        // This is a simplified implementation - production code would use
-        // a full butterfly network for optimal performance
-
-        // For now, we'll do a semi-optimized version that uses SSE2 for
-        // arithmetic but still requires some scalar operations
-        let mut row_vals = [0.0f32; 8];
-        _mm_storeu_ps(&mut row_vals[0], row_lo);
-        _mm_storeu_ps(&mut row_vals[4], row_hi);
-
-        // Compute DCT coefficients using vectorized operations where possible
+        // Process each output frequency
         for u in 0..8 {
-            let cu = if u == 0 { 1.0 / 2.0f32.sqrt() } else { 1.0 };
+            // Load DCT coefficients for this frequency
+            let coeff_lo = _mm_loadu_ps(&DCT_COEFF[u][0]);
+            let coeff_hi = _mm_loadu_ps(&DCT_COEFF[u][4]);
 
-            // Compute cos values for this frequency
-            let cos0 = ((2 * 0 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos1 = ((2 * 1 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos2 = ((2 * 2 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos3 = ((2 * 3 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos4 = ((2 * 4 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos5 = ((2 * 5 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos6 = ((2 * 6 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos7 = ((2 * 7 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
+            // Multiply input by coefficients
+            let prod_lo = _mm_mul_ps(row_lo, coeff_lo);
+            let prod_hi = _mm_mul_ps(row_hi, coeff_hi);
 
-            // Load coefficients into SSE2 vectors
-            let cos_lo = _mm_set_ps(cos3.cos(), cos2.cos(), cos1.cos(), cos0.cos());
-            let cos_hi = _mm_set_ps(cos7.cos(), cos6.cos(), cos5.cos(), cos4.cos());
-
-            // Multiply and accumulate using SSE2
-            let prod_lo = _mm_mul_ps(row_lo, cos_lo);
-            let prod_hi = _mm_mul_ps(row_hi, cos_hi);
-
-            // Horizontal add to get sum
+            // Sum all products - use horizontal add for better performance
             let sum_vec = _mm_add_ps(prod_lo, prod_hi);
-            let mut sum_arr = [0.0f32; 4];
-            _mm_storeu_ps(&mut sum_arr[0], sum_vec);
-            let sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
 
-            // For separable 2D DCT, each 1D pass uses sqrt(2/N) normalization
-            temp[row_start + u] = cu * sum * (2.0f32 / 8.0).sqrt();
+            // Efficient horizontal sum using SSE3 if available, otherwise manual
+            #[cfg(target_feature = "sse3")]
+            {
+                let shuf = _mm_movehdup_ps(sum_vec);
+                let sums = _mm_add_ps(sum_vec, shuf);
+                let shuf = _mm_movehl_ps(shuf, sums);
+                let result = _mm_add_ss(sums, shuf);
+                let mut sum = 0.0f32;
+                _mm_store_ss(&mut sum, result);
+
+                let norm_factor = if u == 0 { C0 * NORM } else { NORM };
+                temp[row_start + u] = sum * norm_factor;
+            }
+            #[cfg(not(target_feature = "sse3"))]
+            {
+                let mut sum_arr = [0.0f32; 4];
+                _mm_storeu_ps(&mut sum_arr[0], sum_vec);
+                let sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
+
+                let norm_factor = if u == 0 { C0 * NORM } else { NORM };
+                temp[row_start + u] = sum * norm_factor;
+            }
         }
     }
 
-    // Stage 2: Transpose using SSE2 (4x4 blocks)
+    // Stage 2: Transpose (scalar is fine for 8x8, overhead is small)
     let mut transposed = [0.0f32; 64];
     for i in 0..8 {
         for j in 0..8 {
@@ -385,46 +388,47 @@ unsafe fn dct8x8_sse2(input: &[f32; 64], output: &mut [f32; 64]) {
         }
     }
 
-    // Stage 3: 1D DCT on transposed rows (original columns)
+    // Stage 3: 1D DCT on columns (now rows of transposed matrix)
     for i in 0..8 {
         let row_start = i * 8;
 
         let row_lo = _mm_loadu_ps(&transposed[row_start]);
         let row_hi = _mm_loadu_ps(&transposed[row_start + 4]);
 
-        let mut row_vals = [0.0f32; 8];
-        _mm_storeu_ps(&mut row_vals[0], row_lo);
-        _mm_storeu_ps(&mut row_vals[4], row_hi);
-
         for u in 0..8 {
-            let cu = if u == 0 { 1.0 / 2.0f32.sqrt() } else { 1.0 };
+            let coeff_lo = _mm_loadu_ps(&DCT_COEFF[u][0]);
+            let coeff_hi = _mm_loadu_ps(&DCT_COEFF[u][4]);
 
-            let cos0 = ((2 * 0 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos1 = ((2 * 1 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos2 = ((2 * 2 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos3 = ((2 * 3 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos4 = ((2 * 4 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos5 = ((2 * 5 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos6 = ((2 * 6 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos7 = ((2 * 7 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-
-            let cos_lo = _mm_set_ps(cos3.cos(), cos2.cos(), cos1.cos(), cos0.cos());
-            let cos_hi = _mm_set_ps(cos7.cos(), cos6.cos(), cos5.cos(), cos4.cos());
-
-            let prod_lo = _mm_mul_ps(row_lo, cos_lo);
-            let prod_hi = _mm_mul_ps(row_hi, cos_hi);
+            let prod_lo = _mm_mul_ps(row_lo, coeff_lo);
+            let prod_hi = _mm_mul_ps(row_hi, coeff_hi);
 
             let sum_vec = _mm_add_ps(prod_lo, prod_hi);
-            let mut sum_arr = [0.0f32; 4];
-            _mm_storeu_ps(&mut sum_arr[0], sum_vec);
-            let sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
 
-            // For separable 2D DCT, each 1D pass uses sqrt(2/N) normalization
-            temp[row_start + u] = cu * sum * (2.0f32 / 8.0).sqrt();
+            #[cfg(target_feature = "sse3")]
+            {
+                let shuf = _mm_movehdup_ps(sum_vec);
+                let sums = _mm_add_ps(sum_vec, shuf);
+                let shuf = _mm_movehl_ps(shuf, sums);
+                let result = _mm_add_ss(sums, shuf);
+                let mut sum = 0.0f32;
+                _mm_store_ss(&mut sum, result);
+
+                let norm_factor = if u == 0 { C0 * NORM } else { NORM };
+                temp[row_start + u] = sum * norm_factor;
+            }
+            #[cfg(not(target_feature = "sse3"))]
+            {
+                let mut sum_arr = [0.0f32; 4];
+                _mm_storeu_ps(&mut sum_arr[0], sum_vec);
+                let sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
+
+                let norm_factor = if u == 0 { C0 * NORM } else { NORM };
+                temp[row_start + u] = sum * norm_factor;
+            }
         }
     }
 
-    // Stage 4: Transpose back to get final result
+    // Stage 4: Transpose back
     for i in 0..8 {
         for j in 0..8 {
             output[j * 8 + i] = temp[i * 8 + j];
@@ -434,60 +438,64 @@ unsafe fn dct8x8_sse2(input: &[f32; 64], output: &mut [f32; 64]) {
 
 /// AVX2 8x8 DCT implementation (x86/x86_64)
 ///
-/// Uses 256-bit vectors to process full 8-element rows at once.
+/// Uses 256-bit vectors to process full 8-element rows at once with precomputed coefficients.
 /// Performance: ~3-4x faster than scalar, ~1.5-2x faster than SSE2
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn dct8x8_avx2(input: &[f32; 64], output: &mut [f32; 64]) {
     use std::arch::x86_64::*;
 
-    // DCT coefficients
-    const C4: f32 = 0.70710678;  // 1/sqrt(2)
+    // Precomputed DCT cosine coefficient matrix (same as SSE2)
+    #[rustfmt::skip]
+    const DCT_COEFF: [[f32; 8]; 8] = [
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        [0.98078528, 0.83146961, 0.55557023, 0.19509032, -0.19509032, -0.55557023, -0.83146961, -0.98078528],
+        [0.92387953, 0.38268343, -0.38268343, -0.92387953, -0.92387953, -0.38268343, 0.38268343, 0.92387953],
+        [0.83146961, -0.19509032, -0.98078528, -0.55557023, 0.55557023, 0.98078528, 0.19509032, -0.83146961],
+        [0.70710678, -0.70710678, -0.70710678, 0.70710678, 0.70710678, -0.70710678, -0.70710678, 0.70710678],
+        [0.55557023, -0.98078528, 0.19509032, 0.83146961, -0.83146961, -0.19509032, 0.98078528, -0.55557023],
+        [0.38268343, -0.92387953, 0.92387953, -0.38268343, -0.38268343, 0.92387953, -0.92387953, 0.38268343],
+        [0.19509032, -0.55557023, 0.83146961, -0.98078528, 0.98078528, -0.83146961, 0.55557023, -0.19509032],
+    ];
+
+    const NORM: f32 = 0.5;
+    const C0: f32 = 0.70710678;
 
     let mut temp = [0.0f32; 64];
 
-    // Stage 1: 1D DCT on each row using AVX2 (__m256 = 8 floats)
+    // Stage 1: 1D DCT on each row using AVX2
     for i in 0..8 {
         let row_start = i * 8;
 
         // Load entire row into single AVX2 register
         let row = _mm256_loadu_ps(&input[row_start]);
 
-        // Compute DCT coefficients
+        // Process each output frequency
         for u in 0..8 {
-            let cu = if u == 0 { 1.0 / 2.0f32.sqrt() } else { 1.0 };
+            // Load all 8 DCT coefficients for this frequency
+            let coeff = _mm256_loadu_ps(&DCT_COEFF[u][0]);
 
-            // Compute cosine values for this frequency
-            let cos0 = ((2 * 0 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos1 = ((2 * 1 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos2 = ((2 * 2 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos3 = ((2 * 3 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos4 = ((2 * 4 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos5 = ((2 * 5 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos6 = ((2 * 6 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos7 = ((2 * 7 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
+            // Multiply row by coefficients
+            let prod = _mm256_mul_ps(row, coeff);
 
-            // Load all 8 cosine coefficients into AVX2 register
-            let cos_vec = _mm256_set_ps(
-                cos7.cos(), cos6.cos(), cos5.cos(), cos4.cos(),
-                cos3.cos(), cos2.cos(), cos1.cos(), cos0.cos()
-            );
-
-            // Multiply row by cosine coefficients
-            let prod = _mm256_mul_ps(row, cos_vec);
-
-            // Horizontal sum of all 8 elements
-            // AVX2 doesn't have direct 8-way horizontal add, so we do it in stages
-            let sum_lo = _mm256_extractf128_ps(prod, 0);
+            // Horizontal sum using AVX2
+            // Step 1: Add upper and lower 128-bit lanes
+            let sum_lo = _mm256_castps256_ps128(prod);
             let sum_hi = _mm256_extractf128_ps(prod, 1);
             let sum_128 = _mm_add_ps(sum_lo, sum_hi);
 
-            let mut sum_arr = [0.0f32; 4];
-            _mm_storeu_ps(&mut sum_arr[0], sum_128);
-            let sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
+            // Step 2: Horizontal add within 128-bit (using SSE3)
+            let shuf = _mm_movehdup_ps(sum_128);
+            let sums = _mm_add_ps(sum_128, shuf);
+            let shuf = _mm_movehl_ps(shuf, sums);
+            let result = _mm_add_ss(sums, shuf);
 
-            // For separable 2D DCT, each 1D pass uses sqrt(2/N) normalization
-            temp[row_start + u] = cu * sum * (2.0f32 / 8.0).sqrt();
+            // Extract result
+            let mut sum = 0.0f32;
+            _mm_store_ss(&mut sum, result);
+
+            let norm_factor = if u == 0 { C0 * NORM } else { NORM };
+            temp[row_start + u] = sum * norm_factor;
         }
     }
 
@@ -499,39 +507,29 @@ unsafe fn dct8x8_avx2(input: &[f32; 64], output: &mut [f32; 64]) {
         }
     }
 
-    // Stage 3: 1D DCT on transposed rows
+    // Stage 3: 1D DCT on transposed rows (original columns)
     for i in 0..8 {
         let row_start = i * 8;
         let row = _mm256_loadu_ps(&transposed[row_start]);
 
         for u in 0..8 {
-            let cu = if u == 0 { 1.0 / 2.0f32.sqrt() } else { 1.0 };
+            let coeff = _mm256_loadu_ps(&DCT_COEFF[u][0]);
+            let prod = _mm256_mul_ps(row, coeff);
 
-            let cos0 = ((2 * 0 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos1 = ((2 * 1 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos2 = ((2 * 2 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos3 = ((2 * 3 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos4 = ((2 * 4 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos5 = ((2 * 5 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos6 = ((2 * 6 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-            let cos7 = ((2 * 7 + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-
-            let cos_vec = _mm256_set_ps(
-                cos7.cos(), cos6.cos(), cos5.cos(), cos4.cos(),
-                cos3.cos(), cos2.cos(), cos1.cos(), cos0.cos()
-            );
-
-            let prod = _mm256_mul_ps(row, cos_vec);
-            let sum_lo = _mm256_extractf128_ps(prod, 0);
+            let sum_lo = _mm256_castps256_ps128(prod);
             let sum_hi = _mm256_extractf128_ps(prod, 1);
             let sum_128 = _mm_add_ps(sum_lo, sum_hi);
 
-            let mut sum_arr = [0.0f32; 4];
-            _mm_storeu_ps(&mut sum_arr[0], sum_128);
-            let sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
+            let shuf = _mm_movehdup_ps(sum_128);
+            let sums = _mm_add_ps(sum_128, shuf);
+            let shuf = _mm_movehl_ps(shuf, sums);
+            let result = _mm_add_ss(sums, shuf);
 
-            // For separable 2D DCT, each 1D pass uses sqrt(2/N) normalization
-            temp[row_start + u] = cu * sum * (2.0f32 / 8.0).sqrt();
+            let mut sum = 0.0f32;
+            _mm_store_ss(&mut sum, result);
+
+            let norm_factor = if u == 0 { C0 * NORM } else { NORM };
+            temp[row_start + u] = sum * norm_factor;
         }
     }
 
@@ -557,7 +555,7 @@ unsafe fn dct8x8_neon(input: &[f32; 64], output: &mut [f32; 64]) {
 
 /// SSE2 8x8 IDCT implementation (x86/x86_64)
 ///
-/// Optimized inverse DCT using SSE2 intrinsics.
+/// Optimized inverse DCT using SSE2 intrinsics with precomputed coefficients.
 /// Performance: ~2-3x faster than scalar implementation
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "sse2")]
@@ -567,41 +565,69 @@ unsafe fn idct8x8_sse2(input: &[f32; 64], output: &mut [f32; 64]) {
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
 
-    // IDCT coefficients
-    const C4: f32 = 0.70710678;  // 1/sqrt(2)
+    // IDCT uses same coefficient matrix as DCT (transpose of DCT matrix)
+    #[rustfmt::skip]
+    const IDCT_COEFF: [[f32; 8]; 8] = [
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        [0.98078528, 0.83146961, 0.55557023, 0.19509032, -0.19509032, -0.55557023, -0.83146961, -0.98078528],
+        [0.92387953, 0.38268343, -0.38268343, -0.92387953, -0.92387953, -0.38268343, 0.38268343, 0.92387953],
+        [0.83146961, -0.19509032, -0.98078528, -0.55557023, 0.55557023, 0.98078528, 0.19509032, -0.83146961],
+        [0.70710678, -0.70710678, -0.70710678, 0.70710678, 0.70710678, -0.70710678, -0.70710678, 0.70710678],
+        [0.55557023, -0.98078528, 0.19509032, 0.83146961, -0.83146961, -0.19509032, 0.98078528, -0.55557023],
+        [0.38268343, -0.92387953, 0.92387953, -0.38268343, -0.38268343, 0.92387953, -0.92387953, 0.38268343],
+        [0.19509032, -0.55557023, 0.83146961, -0.98078528, 0.98078528, -0.83146961, 0.55557023, -0.19509032],
+    ];
+
+    const NORM: f32 = 0.5;
+    const C0: f32 = 0.70710678;
 
     let mut temp = [0.0f32; 64];
 
-    // Stage 1: 1D IDCT on each row using SSE2
+    // Stage 1: 1D IDCT on each row
     for i in 0..8 {
         let row_start = i * 8;
 
+        // For IDCT, we process spatial positions (x) by summing over frequencies (u)
         // Load frequency coefficients
         let freq_lo = _mm_loadu_ps(&input[row_start]);
         let freq_hi = _mm_loadu_ps(&input[row_start + 4]);
 
-        // Compute spatial domain values
-        for x in 0..8 {
-            // Compute sum over all frequencies
-            let mut sum = 0.0f32;
+        // Extract frequency values to array
+        let mut freqs = [0.0f32; 8];
+        _mm_storeu_ps(&mut freqs[0], freq_lo);
+        _mm_storeu_ps(&mut freqs[4], freq_hi);
 
+        // Compute each spatial position
+        for x in 0..8 {
+            // Load IDCT coefficients for this spatial position (column x of coefficient matrix)
+            let mut coeff = [0.0f32; 8];
             for u in 0..8 {
-                let cu = if u == 0 { C4 } else { 1.0 };
-                let angle = ((2 * x + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-                let coeff = if u < 4 {
-                    let mut arr = [0.0f32; 4];
-                    _mm_storeu_ps(&mut arr[0], freq_lo);
-                    arr[u]
-                } else {
-                    let mut arr = [0.0f32; 4];
-                    _mm_storeu_ps(&mut arr[0], freq_hi);
-                    arr[u - 4]
-                };
-                // For separable IDCT, use sqrt(2/N) normalization for each 1D pass
-                sum += cu * coeff * angle.cos() * (2.0f32 / 8.0).sqrt();
+                coeff[u] = IDCT_COEFF[u][x];
             }
 
-            temp[row_start + x] = sum;
+            let coeff_lo = _mm_loadu_ps(&coeff[0]);
+            let coeff_hi = _mm_loadu_ps(&coeff[4]);
+
+            // Apply normalization factors (C0 for u=0, 1.0 otherwise)
+            let mut norm_freqs = [0.0f32; 8];
+            norm_freqs[0] = freqs[0] * C0;
+            for u in 1..8 {
+                norm_freqs[u] = freqs[u];
+            }
+
+            let freq_norm_lo = _mm_loadu_ps(&norm_freqs[0]);
+            let freq_norm_hi = _mm_loadu_ps(&norm_freqs[4]);
+
+            // Multiply and sum
+            let prod_lo = _mm_mul_ps(freq_norm_lo, coeff_lo);
+            let prod_hi = _mm_mul_ps(freq_norm_hi, coeff_hi);
+            let sum_vec = _mm_add_ps(prod_lo, prod_hi);
+
+            let mut sum_arr = [0.0f32; 4];
+            _mm_storeu_ps(&mut sum_arr[0], sum_vec);
+            let sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
+
+            temp[row_start + x] = sum * NORM;
         }
     }
 
@@ -620,26 +646,37 @@ unsafe fn idct8x8_sse2(input: &[f32; 64], output: &mut [f32; 64]) {
         let freq_lo = _mm_loadu_ps(&transposed[row_start]);
         let freq_hi = _mm_loadu_ps(&transposed[row_start + 4]);
 
-        for x in 0..8 {
-            let mut sum = 0.0f32;
+        let mut freqs = [0.0f32; 8];
+        _mm_storeu_ps(&mut freqs[0], freq_lo);
+        _mm_storeu_ps(&mut freqs[4], freq_hi);
 
+        for x in 0..8 {
+            let mut coeff = [0.0f32; 8];
             for u in 0..8 {
-                let cu = if u == 0 { C4 } else { 1.0 };
-                let angle = ((2 * x + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-                let coeff = if u < 4 {
-                    let mut arr = [0.0f32; 4];
-                    _mm_storeu_ps(&mut arr[0], freq_lo);
-                    arr[u]
-                } else {
-                    let mut arr = [0.0f32; 4];
-                    _mm_storeu_ps(&mut arr[0], freq_hi);
-                    arr[u - 4]
-                };
-                // For separable IDCT, use sqrt(2/N) normalization for each 1D pass
-                sum += cu * coeff * angle.cos() * (2.0f32 / 8.0).sqrt();
+                coeff[u] = IDCT_COEFF[u][x];
             }
 
-            temp[row_start + x] = sum;
+            let coeff_lo = _mm_loadu_ps(&coeff[0]);
+            let coeff_hi = _mm_loadu_ps(&coeff[4]);
+
+            let mut norm_freqs = [0.0f32; 8];
+            norm_freqs[0] = freqs[0] * C0;
+            for u in 1..8 {
+                norm_freqs[u] = freqs[u];
+            }
+
+            let freq_norm_lo = _mm_loadu_ps(&norm_freqs[0]);
+            let freq_norm_hi = _mm_loadu_ps(&norm_freqs[4]);
+
+            let prod_lo = _mm_mul_ps(freq_norm_lo, coeff_lo);
+            let prod_hi = _mm_mul_ps(freq_norm_hi, coeff_hi);
+            let sum_vec = _mm_add_ps(prod_lo, prod_hi);
+
+            let mut sum_arr = [0.0f32; 4];
+            _mm_storeu_ps(&mut sum_arr[0], sum_vec);
+            let sum = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
+
+            temp[row_start + x] = sum * NORM;
         }
     }
 
@@ -653,14 +690,28 @@ unsafe fn idct8x8_sse2(input: &[f32; 64], output: &mut [f32; 64]) {
 
 /// AVX2 8x8 IDCT implementation (x86/x86_64)
 ///
-/// Uses 256-bit vectors for full 8-element row processing.
+/// Uses 256-bit vectors for full 8-element row processing with precomputed coefficients.
 /// Performance: ~3-4x faster than scalar
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn idct8x8_avx2(input: &[f32; 64], output: &mut [f32; 64]) {
     use std::arch::x86_64::*;
 
-    const C4: f32 = 0.70710678;
+    // Same coefficient matrix as SSE2 version
+    #[rustfmt::skip]
+    const IDCT_COEFF: [[f32; 8]; 8] = [
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        [0.98078528, 0.83146961, 0.55557023, 0.19509032, -0.19509032, -0.55557023, -0.83146961, -0.98078528],
+        [0.92387953, 0.38268343, -0.38268343, -0.92387953, -0.92387953, -0.38268343, 0.38268343, 0.92387953],
+        [0.83146961, -0.19509032, -0.98078528, -0.55557023, 0.55557023, 0.98078528, 0.19509032, -0.83146961],
+        [0.70710678, -0.70710678, -0.70710678, 0.70710678, 0.70710678, -0.70710678, -0.70710678, 0.70710678],
+        [0.55557023, -0.98078528, 0.19509032, 0.83146961, -0.83146961, -0.19509032, 0.98078528, -0.55557023],
+        [0.38268343, -0.92387953, 0.92387953, -0.38268343, -0.38268343, 0.92387953, -0.92387953, 0.38268343],
+        [0.19509032, -0.55557023, 0.83146961, -0.98078528, 0.98078528, -0.83146961, 0.55557023, -0.19509032],
+    ];
+
+    const NORM: f32 = 0.5;
+    const C0: f32 = 0.70710678;
 
     let mut temp = [0.0f32; 64];
 
@@ -669,20 +720,44 @@ unsafe fn idct8x8_avx2(input: &[f32; 64], output: &mut [f32; 64]) {
         let row_start = i * 8;
         let freq = _mm256_loadu_ps(&input[row_start]);
 
+        // Extract frequencies
+        let mut freqs = [0.0f32; 8];
+        _mm256_storeu_ps(&mut freqs[0], freq);
+
+        // Compute each spatial position
         for x in 0..8 {
-            let mut sum = 0.0f32;
-
+            // Load IDCT coefficients for this position
+            let mut coeff = [0.0f32; 8];
             for u in 0..8 {
-                let cu = if u == 0 { C4 } else { 1.0 };
-                let angle = ((2 * x + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-
-                let mut freq_arr = [0.0f32; 8];
-                _mm256_storeu_ps(&mut freq_arr[0], freq);
-                // For separable IDCT, use sqrt(2/N) normalization for each 1D pass
-                sum += cu * freq_arr[u] * angle.cos() * (2.0f32 / 8.0).sqrt();
+                coeff[u] = IDCT_COEFF[u][x];
             }
+            let coeff_vec = _mm256_loadu_ps(&coeff[0]);
 
-            temp[row_start + x] = sum;
+            // Apply normalization
+            let mut norm_freqs = [0.0f32; 8];
+            norm_freqs[0] = freqs[0] * C0;
+            for u in 1..8 {
+                norm_freqs[u] = freqs[u];
+            }
+            let freq_norm = _mm256_loadu_ps(&norm_freqs[0]);
+
+            // Multiply and sum
+            let prod = _mm256_mul_ps(freq_norm, coeff_vec);
+
+            // Horizontal sum using AVX2
+            let sum_lo = _mm256_castps256_ps128(prod);
+            let sum_hi = _mm256_extractf128_ps(prod, 1);
+            let sum_128 = _mm_add_ps(sum_lo, sum_hi);
+
+            let shuf = _mm_movehdup_ps(sum_128);
+            let sums = _mm_add_ps(sum_128, shuf);
+            let shuf = _mm_movehl_ps(shuf, sums);
+            let result = _mm_add_ss(sums, shuf);
+
+            let mut sum = 0.0f32;
+            _mm_store_ss(&mut sum, result);
+
+            temp[row_start + x] = sum * NORM;
         }
     }
 
@@ -699,20 +774,38 @@ unsafe fn idct8x8_avx2(input: &[f32; 64], output: &mut [f32; 64]) {
         let row_start = i * 8;
         let freq = _mm256_loadu_ps(&transposed[row_start]);
 
+        let mut freqs = [0.0f32; 8];
+        _mm256_storeu_ps(&mut freqs[0], freq);
+
         for x in 0..8 {
-            let mut sum = 0.0f32;
-
+            let mut coeff = [0.0f32; 8];
             for u in 0..8 {
-                let cu = if u == 0 { C4 } else { 1.0 };
-                let angle = ((2 * x + 1) * u) as f32 * std::f32::consts::PI / 16.0;
-
-                let mut freq_arr = [0.0f32; 8];
-                _mm256_storeu_ps(&mut freq_arr[0], freq);
-                // For separable IDCT, use sqrt(2/N) normalization for each 1D pass
-                sum += cu * freq_arr[u] * angle.cos() * (2.0f32 / 8.0).sqrt();
+                coeff[u] = IDCT_COEFF[u][x];
             }
+            let coeff_vec = _mm256_loadu_ps(&coeff[0]);
 
-            temp[row_start + x] = sum;
+            let mut norm_freqs = [0.0f32; 8];
+            norm_freqs[0] = freqs[0] * C0;
+            for u in 1..8 {
+                norm_freqs[u] = freqs[u];
+            }
+            let freq_norm = _mm256_loadu_ps(&norm_freqs[0]);
+
+            let prod = _mm256_mul_ps(freq_norm, coeff_vec);
+
+            let sum_lo = _mm256_castps256_ps128(prod);
+            let sum_hi = _mm256_extractf128_ps(prod, 1);
+            let sum_128 = _mm_add_ps(sum_lo, sum_hi);
+
+            let shuf = _mm_movehdup_ps(sum_128);
+            let sums = _mm_add_ps(sum_128, shuf);
+            let shuf = _mm_movehl_ps(shuf, sums);
+            let result = _mm_add_ss(sums, shuf);
+
+            let mut sum = 0.0f32;
+            _mm_store_ss(&mut sum, result);
+
+            temp[row_start + x] = sum * NORM;
         }
     }
 
