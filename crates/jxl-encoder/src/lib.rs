@@ -1,6 +1,6 @@
 //! JPEG XL encoder implementation
 
-use jxl_bitstream::{AnsDistribution, RansEncoder, BitWriter, ContextModel, Context};
+use jxl_bitstream::{AnsDistribution, RansEncoder, BitWriter, ContextModel, Context, encode_hybrid_uint};
 use jxl_color::{rgb_to_xyb, srgb_u8_to_linear_f32};
 use jxl_core::*;
 use jxl_headers::{Container, JxlImageMetadata, CODESTREAM_SIGNATURE};
@@ -324,13 +324,23 @@ impl JxlEncoder {
         // 1. Convert image to ModularImage (integer samples)
         // 2. Apply reversible color transform (RCT) for RGB
         // 3. Apply predictive coding (Gradient predictor)
-        // 4. Encode residuals with ANS
+        // 4. Encode residuals with HybridUint ANS compression
 
         // Write modular mode marker (1 bit)
         writer.write_bits(1, 1)?;
 
-        // Create modular image from input
-        let mut modular_img = ModularImage::new(width, height, num_channels.min(3), 8);
+        // Determine bit depth from image type
+        let bit_depth = match &image.buffer {
+            ImageBuffer::U8(_) => 8,
+            ImageBuffer::U16(_) => 16,
+            ImageBuffer::F32(_) => 8,  // Quantize to 8-bit for float
+        };
+
+        // Write bit depth (4 bits: 0-15 representing 1-16 bits)
+        writer.write_bits((bit_depth - 1) as u64, 4)?;
+
+        // Create modular image with appropriate bit depth
+        let mut modular_img = ModularImage::new(width, height, num_channels.min(3), bit_depth);
 
         // Copy image data to modular format
         match &image.buffer {
@@ -342,10 +352,10 @@ impl JxlEncoder {
                 }
             }
             ImageBuffer::U16(buffer) => {
-                // Scale 16-bit to 8-bit for now (TODO: support 16-bit properly)
+                // Full 16-bit support with HybridUint encoding
                 for ch in 0..num_channels.min(3) {
                     for i in 0..width * height {
-                        modular_img.data[ch][i] = (buffer[i * num_channels + ch] / 256) as i32;
+                        modular_img.data[ch][i] = buffer[i * num_channels + ch] as i32;
                     }
                 }
             }
@@ -361,6 +371,7 @@ impl JxlEncoder {
         }
 
         // Apply RCT (reversible color transform) if RGB
+        let max_value = (1 << bit_depth) - 1;  // 255 for 8-bit, 65535 for 16-bit
         if num_channels >= 3 {
             let mut ycocg = vec![Vec::new(); 3];
             apply_rct(&modular_img.data[0], &modular_img.data[1], &modular_img.data[2], &mut ycocg);
@@ -370,13 +381,12 @@ impl JxlEncoder {
             modular_img.data[2] = ycocg[2].clone();
 
             // Bias Co/Cg values to make them unsigned for predictor
-            // Y: 0-255 (already unsigned)
-            // Co: -255 to 255 → add 255 → 0 to 510
-            // Cg: -255 to 255 → add 255 → 0 to 510
+            // 8-bit: Y: 0-255, Co/Cg: -255 to 255 → add 255 → 0 to 510
+            // 16-bit: Y: 0-65535, Co/Cg: -65535 to 65535 → add 65535 → 0 to 131070
             // This is necessary because the gradient predictor assumes unsigned values
             for i in 0..modular_img.data[1].len() {
-                modular_img.data[1][i] += 255;  // Co offset
-                modular_img.data[2][i] += 255;  // Cg offset
+                modular_img.data[1][i] += max_value;  // Co offset
+                modular_img.data[2][i] += max_value;  // Cg offset
             }
         }
 
@@ -433,25 +443,39 @@ impl JxlEncoder {
             })
             .collect();
 
-        // Build frequency distribution from symbols
-        let mut freq_map: HashMap<u32, u32> = HashMap::new();
+        // Build frequency distribution for HybridUint tokens
+        // We need to determine which values will be direct (0-255) and which will use tokens
+        // For JPEG XL compliance, use 512-symbol distribution (256 direct + 256 for tokens)
+        let mut token_freq_map: HashMap<u32, u32> = HashMap::new();
+        let mut tokens_and_raw: Vec<(u32, Option<(u32, u32)>)> = Vec::with_capacity(symbols.len());
+
         for &symbol in &symbols {
-            *freq_map.entry(symbol).or_insert(0) += 1;
+            // Determine the token that would be used for this symbol
+            let (token, raw_info) = if symbol <= 255 {
+                (symbol, None)  // Direct encoding, no raw bits
+            } else {
+                // Token for split encoding
+                let n = 31 - symbol.leading_zeros();
+                let token = 256 + (n - 8);
+                let raw_bits = symbol & ((1 << n) - 1);
+                (token, Some((raw_bits, n)))
+            };
+            tokens_and_raw.push((token, raw_info));
+            *token_freq_map.entry(token).or_insert(0) += 1;
         }
 
-        // Convert to frequency vector
-        let max_symbol = *freq_map.keys().max().unwrap_or(&0);
-        // Use 12-bit alphabet (4096) like JPEG XL spec, not 512
-        let alphabet_size = (max_symbol + 1).min(4096) as usize;
-        let mut frequencies = vec![1u32; alphabet_size]; // Start with 1 for all symbols
+        // Create frequency vector for tokens (512 symbols: 0-511)
+        // This covers direct values (0-255) and tokens for bit lengths 9-32 (256-279)
+        let alphabet_size = 512;
+        let mut frequencies = vec![1u32; alphabet_size];  // Start with 1 for smoothing
 
-        for (&symbol, &freq) in &freq_map {
-            if (symbol as usize) < alphabet_size {
-                frequencies[symbol as usize] = freq + 1; // Add actual frequency + 1
+        for (&token, &freq) in &token_freq_map {
+            if (token as usize) < alphabet_size {
+                frequencies[token as usize] = freq + 1;  // Add actual frequency + 1
             }
         }
 
-        // Create ANS distribution
+        // Create ANS distribution for tokens
         let distribution = AnsDistribution::from_frequencies(&frequencies)?;
 
         // Write distribution to bitstream
@@ -460,17 +484,24 @@ impl JxlEncoder {
         // Write number of symbols
         writer.write_u32(symbols.len() as u32, 32)?;
 
-        // Encode symbols with ANS
+        // Encode all tokens with ANS (in reverse order for rANS LIFO)
         let mut encoder = RansEncoder::new();
-        for &symbol in symbols.iter().rev() {
-            let clamped_symbol = (symbol as usize).min(alphabet_size - 1);
-            encoder.encode_symbol(clamped_symbol, &distribution)?;
+        for &(token, _) in tokens_and_raw.iter().rev() {
+            encoder.encode_symbol(token as usize, &distribution)?;
         }
 
+        // Finalize ANS encoding and write
         let ans_data = encoder.finalize();
         writer.write_u32(ans_data.len() as u32, 32)?;
         for &byte in &ans_data {
             writer.write_bits(byte as u64, 8)?;
+        }
+
+        // Write all raw bits in forward order
+        for &(_, raw_info) in &tokens_and_raw {
+            if let Some((raw_bits, num_bits)) = raw_info {
+                writer.write_bits(raw_bits as u64, num_bits as usize)?;
+            }
         }
 
         Ok(())
