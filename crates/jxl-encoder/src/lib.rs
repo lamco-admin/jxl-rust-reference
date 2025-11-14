@@ -374,19 +374,8 @@ impl JxlEncoder {
             let mut residuals = Vec::new();
             modular_img.apply_predictor(ch, Predictor::Gradient, &mut residuals)?;
 
-            // Encode residuals with simple run-length + ANS
-            // For now, write raw residuals (TODO: proper ANS encoding)
-            writer.write_u32(residuals.len() as u32, 32)?;
-
-            for &residual in &residuals {
-                // Write residual as signed value (zigzag encoding)
-                let symbol = if residual >= 0 {
-                    (residual as u32) * 2
-                } else {
-                    ((-residual) as u32) * 2 - 1
-                };
-                writer.write_u32(symbol, 16)?;
-            }
+            // Encode residuals with ANS compression
+            self.encode_residuals_ans(&residuals, writer)?;
         }
 
         // Encode alpha channel if present
@@ -410,6 +399,66 @@ impl JxlEncoder {
                     }
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Encode lossless residuals with ANS compression
+    fn encode_residuals_ans<W: Write>(
+        &self,
+        residuals: &[i32],
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        // Convert residuals to symbols (zigzag encoding: 0->0, 1->1, -1->2, 2->3, -2->4, ...)
+        let symbols: Vec<u32> = residuals
+            .iter()
+            .map(|&residual| {
+                if residual >= 0 {
+                    (residual as u32) * 2
+                } else {
+                    ((-residual) as u32) * 2 - 1
+                }
+            })
+            .collect();
+
+        // Build frequency distribution from symbols
+        let mut freq_map: HashMap<u32, u32> = HashMap::new();
+        for &symbol in &symbols {
+            *freq_map.entry(symbol).or_insert(0) += 1;
+        }
+
+        // Convert to frequency vector
+        let max_symbol = *freq_map.keys().max().unwrap_or(&0);
+        let alphabet_size = (max_symbol + 1).min(512) as usize; // Limit alphabet size
+        let mut frequencies = vec![1u32; alphabet_size]; // Start with 1 for all symbols
+
+        for (&symbol, &freq) in &freq_map {
+            if (symbol as usize) < alphabet_size {
+                frequencies[symbol as usize] = freq + 1; // Add actual frequency + 1
+            }
+        }
+
+        // Create ANS distribution
+        let distribution = AnsDistribution::from_frequencies(&frequencies)?;
+
+        // Write distribution to bitstream
+        self.write_distribution(&distribution, writer)?;
+
+        // Write number of symbols
+        writer.write_u32(symbols.len() as u32, 32)?;
+
+        // Encode symbols with ANS
+        let mut encoder = RansEncoder::new();
+        for &symbol in symbols.iter().rev() {
+            let clamped_symbol = (symbol as usize).min(alphabet_size - 1);
+            encoder.encode_symbol(clamped_symbol, &distribution)?;
+        }
+
+        let ans_data = encoder.finalize();
+        writer.write_u32(ans_data.len() as u32, 32)?;
+        for &byte in &ans_data {
+            writer.write_bits(byte as u64, 8)?;
         }
 
         Ok(())
