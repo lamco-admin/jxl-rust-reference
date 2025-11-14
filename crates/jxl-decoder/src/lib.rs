@@ -155,10 +155,17 @@ impl JxlDecoder {
         }
         let aq_map = AdaptiveQuantMap::deserialize(&aq_serialized, width, height, quality)?;
 
-        // Step 3: Decode quantized coefficients
-        let quantized = self.decode_coefficients(reader, width, height)?;
+        // Step 3: Read progressive mode flag
+        let progressive = reader.read_bits(1)? == 1;
 
-        // Step 4: Adaptive dequantization using AQ map from bitstream (parallel)
+        // Step 4: Decode quantized coefficients
+        let quantized = if progressive {
+            self.decode_coefficients_progressive(reader, width, height)?
+        } else {
+            self.decode_coefficients(reader, width, height)?
+        };
+
+        // Step 5: Adaptive dequantization using AQ map from bitstream (parallel)
         let xyb_tables = generate_xyb_quant_tables(quality);
         let quant_tables = [&xyb_tables.x_table, &xyb_tables.y_table, &xyb_tables.b_table];
         let blocks_x = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -304,6 +311,146 @@ impl JxlDecoder {
         }
 
         Ok(quantized)
+    }
+
+    /// Decode quantized DCT coefficients in progressive mode
+    fn decode_coefficients_progressive<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+        width: usize,
+        height: usize,
+    ) -> JxlResult<Vec<Vec<i16>>> {
+        let mut quantized = vec![vec![0i16; width * height]; 3];
+
+        // Calculate number of blocks
+        let blocks_x = width.div_ceil(8);
+        let blocks_y = height.div_ceil(8);
+        let num_blocks = blocks_x * blocks_y;
+
+        // Read scan configuration
+        let num_scans = reader.read_bits(8)? as usize;
+        let mut scan_config = Vec::with_capacity(num_scans);
+        for _ in 0..num_scans {
+            scan_config.push(reader.read_bits(8)? as usize);
+        }
+
+        // Read 4 context-aware ANS distributions
+        let mut distributions = Vec::new();
+        for _ in 0..4 {
+            distributions.push(self.read_distribution(reader)?);
+        }
+        let context_model = ContextModel::new(distributions)?;
+
+        // Decode all channels
+        for channel_data in quantized.iter_mut().take(3) {
+            // Pass 1: Decode DC coefficients
+            let dc_coeffs = self.decode_dc_coefficients_context_aware(reader, &context_model)?;
+
+            // Initialize AC array
+            let mut ac_coeffs = vec![0i16; num_blocks * 63];
+
+            // Passes 2+: Decode AC coefficients progressively
+            let mut coeff_offset = 0;
+            for &coeff_count in &scan_config {
+                let pass_ac = self.decode_ac_pass(
+                    reader,
+                    num_blocks,
+                    coeff_count,
+                    coeff_offset,
+                    &context_model,
+                    blocks_x,
+                )?;
+
+                // Merge AC pass into full AC array
+                for block_idx in 0..num_blocks {
+                    for i in 0..coeff_count {
+                        let src_idx = block_idx * coeff_count + i;
+                        let dst_idx = block_idx * 63 + coeff_offset + i;
+                        if dst_idx < ac_coeffs.len() && src_idx < pass_ac.len() {
+                            ac_coeffs[dst_idx] = pass_ac[src_idx];
+                        }
+                    }
+                }
+
+                coeff_offset += coeff_count;
+            }
+
+            // Merge DC and AC back into zigzag format
+            let mut zigzag_data = Vec::new();
+            merge_dc_ac(&dc_coeffs, &ac_coeffs, &mut zigzag_data);
+
+            // Apply inverse zigzag to restore spatial block order
+            let mut spatial_data = Vec::new();
+            inv_zigzag_scan_channel(&zigzag_data, width, height, &mut spatial_data);
+
+            // Copy to output
+            for (i, &val) in spatial_data.iter().enumerate().take(width * height) {
+                channel_data[i] = val;
+            }
+        }
+
+        Ok(quantized)
+    }
+
+    /// Decode a single AC pass in progressive mode
+    fn decode_ac_pass<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+        num_blocks: usize,
+        coeff_count: usize,
+        coeff_offset: usize,
+        context_model: &ContextModel,
+        blocks_x: usize,
+    ) -> JxlResult<Vec<i16>> {
+        let mut ac_coeffs = vec![0i16; num_blocks * coeff_count];
+
+        // Read count of non-zero coefficients
+        let non_zero_count = reader.read_u32(20)? as usize;
+
+        if non_zero_count == 0 {
+            return Ok(ac_coeffs);
+        }
+
+        // Read positions of non-zero coefficients
+        let mut positions = Vec::with_capacity(non_zero_count);
+        for _ in 0..non_zero_count {
+            positions.push(reader.read_u32(20)? as usize);
+        }
+
+        // Read ANS data size
+        let ans_size = reader.read_u32(20)? as usize;
+        let mut ans_data = Vec::with_capacity(ans_size);
+        for _ in 0..ans_size {
+            ans_data.push(reader.read_bits(8)? as u8);
+        }
+
+        // Decode symbols with ANS
+        let mut decoder = RansDecoder::new(ans_data)?;
+        let mut symbols = Vec::with_capacity(non_zero_count);
+
+        for &pos in &positions {
+            let block_idx = pos / coeff_count.max(1);
+            let coeff_idx_in_pass = pos % coeff_count.max(1);
+            let coeff_idx_in_block = coeff_offset + coeff_idx_in_pass + 1;
+
+            let block_x = block_idx % blocks_x;
+            let block_y = block_idx / blocks_x;
+
+            let context = Context::ac_context(coeff_idx_in_block, block_x, block_y, 0);
+            let dist = context_model.get_distribution(&context);
+
+            let symbol = decoder.decode_symbol(dist)? as u32;
+            symbols.push(self.symbol_to_coeff(symbol));
+        }
+
+        // Place decoded coefficients
+        for (&pos, &coeff) in positions.iter().zip(symbols.iter()) {
+            if pos < ac_coeffs.len() {
+                ac_coeffs[pos] = coeff;
+            }
+        }
+
+        Ok(ac_coeffs)
     }
 
     /// Decode DC coefficients with context-aware ANS

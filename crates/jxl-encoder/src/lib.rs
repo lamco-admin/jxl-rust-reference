@@ -25,6 +25,8 @@ pub struct EncoderOptions {
     pub lossless: bool,
     /// Target bits per pixel (for lossy)
     pub target_bpp: Option<f32>,
+    /// Enable progressive encoding (allows multi-pass decoding)
+    pub progressive: bool,
 }
 
 impl Default for EncoderOptions {
@@ -34,6 +36,7 @@ impl Default for EncoderOptions {
             effort: consts::DEFAULT_EFFORT,
             lossless: false,
             target_bpp: None,
+            progressive: false,
         }
     }
 }
@@ -55,6 +58,11 @@ impl EncoderOptions {
 
     pub fn lossless(mut self, lossless: bool) -> Self {
         self.lossless = lossless;
+        self
+    }
+
+    pub fn progressive(mut self, progressive: bool) -> Self {
+        self.progressive = progressive;
         self
     }
 }
@@ -277,7 +285,14 @@ impl JxlEncoder {
         }
 
         // Step 7: Encode quantized coefficients using simplified ANS
-        self.encode_coefficients(&quantized, width, height, writer)?;
+        // Write progressive mode flag
+        writer.write_bits(self.options.progressive as u64, 1)?;
+
+        if self.options.progressive {
+            self.encode_coefficients_progressive(&quantized, width, height, writer)?;
+        } else {
+            self.encode_coefficients(&quantized, width, height, writer)?;
+        }
 
         // Step 8: If there's an alpha channel, encode it separately
         if num_channels == 4 {
@@ -441,6 +456,195 @@ impl JxlEncoder {
                 blocks_x,
                 writer,
             )?;
+        }
+
+        Ok(())
+    }
+
+    /// Encode quantized DCT coefficients in progressive mode (multiple passes)
+    fn encode_coefficients_progressive<W: Write>(
+        &self,
+        quantized: &[Vec<i16>],
+        width: usize,
+        height: usize,
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        // Use default progressive scan configuration: DC + 4 AC passes
+        let scan_config = vec![15, 16, 16, 16]; // AC coefficients per pass
+
+        // Write scan configuration to bitstream
+        writer.write_bits(scan_config.len() as u64, 8)?;
+        for &coeff_count in &scan_config {
+            writer.write_bits(coeff_count as u64, 8)?;
+        }
+
+        // Collect all coefficients for context model building
+        let mut all_zigzag_coeffs = Vec::new();
+        for channel in quantized {
+            let mut zigzag_data = Vec::new();
+            zigzag_scan_channel(channel, width, height, &mut zigzag_data);
+            all_zigzag_coeffs.extend_from_slice(&zigzag_data);
+        }
+
+        // Build context model
+        let context_model = ContextModel::build_from_coefficients(&all_zigzag_coeffs)?;
+
+        // Write all 4 distributions to bitstream
+        for i in 0..4 {
+            let dist = context_model.get_distribution_by_id(i).unwrap();
+            self.write_distribution(dist, writer)?;
+        }
+
+        let blocks_x = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+        // Pass 1: Encode DC coefficients only for all channels
+        for channel in quantized {
+            let mut zigzag_data = Vec::new();
+            zigzag_scan_channel(channel, width, height, &mut zigzag_data);
+            let (dc_coeffs, _) = separate_dc_ac(&zigzag_data);
+
+            // Encode DC pass
+            self.encode_dc_pass(&dc_coeffs, &context_model, writer)?;
+        }
+
+        // Passes 2-5: Encode AC coefficients progressively
+        for (pass_idx, &coeff_count) in scan_config.iter().enumerate() {
+            let start_coeff = if pass_idx == 0 {
+                0
+            } else {
+                scan_config[..pass_idx].iter().sum()
+            };
+            let end_coeff = start_coeff + coeff_count;
+
+            for channel in quantized {
+                let mut zigzag_data = Vec::new();
+                zigzag_scan_channel(channel, width, height, &mut zigzag_data);
+                let (_, ac_coeffs) = separate_dc_ac(&zigzag_data);
+
+                // Extract AC coefficients for this pass
+                let pass_ac = self.extract_ac_pass(&ac_coeffs, start_coeff, end_coeff);
+
+                // Encode AC pass
+                self.encode_ac_pass(&pass_ac, &context_model, blocks_x, start_coeff, writer)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Extract AC coefficients for a specific progressive pass
+    fn extract_ac_pass(&self, ac_coeffs: &[i16], start: usize, end: usize) -> Vec<i16> {
+        let blocks = ac_coeffs.len() / 63;
+        let mut pass_coeffs = vec![0i16; blocks * (end - start)];
+
+        for block_idx in 0..blocks {
+            for coeff_idx in start..end {
+                if coeff_idx < 63 {
+                    let src_idx = block_idx * 63 + coeff_idx;
+                    let dst_idx = block_idx * (end - start) + (coeff_idx - start);
+                    pass_coeffs[dst_idx] = ac_coeffs[src_idx];
+                }
+            }
+        }
+
+        pass_coeffs
+    }
+
+    /// Encode DC coefficients pass
+    fn encode_dc_pass<W: Write>(
+        &self,
+        dc_coeffs: &[i16],
+        context_model: &ContextModel,
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        // Write number of DC coefficients
+        writer.write_u32(dc_coeffs.len() as u32, 20)?;
+
+        if dc_coeffs.is_empty() {
+            return Ok(());
+        }
+
+        // Prepare symbols for DC coefficients (first value + differences)
+        let mut dc_symbols = Vec::with_capacity(dc_coeffs.len());
+        dc_symbols.push(self.coeff_to_symbol(dc_coeffs[0]));
+        for i in 1..dc_coeffs.len() {
+            let diff = dc_coeffs[i] - dc_coeffs[i - 1];
+            dc_symbols.push(self.coeff_to_symbol(diff));
+        }
+
+        // Encode DC with ANS
+        let mut encoder = RansEncoder::new();
+        let dc_context = Context::dc_context(0, 0);
+        let dc_dist = context_model.get_distribution(&dc_context);
+
+        for &symbol in dc_symbols.iter().rev() {
+            encoder.encode_symbol(symbol as usize, dc_dist)?;
+        }
+
+        let ans_data = encoder.finalize();
+        writer.write_u32(ans_data.len() as u32, 20)?;
+        for &byte in &ans_data {
+            writer.write_bits(byte as u64, 8)?;
+        }
+
+        Ok(())
+    }
+
+    /// Encode AC coefficients pass
+    fn encode_ac_pass<W: Write>(
+        &self,
+        ac_coeffs: &[i16],
+        context_model: &ContextModel,
+        blocks_x: usize,
+        start_coeff: usize,
+        writer: &mut BitWriter<W>,
+    ) -> JxlResult<()> {
+        let non_zero_count = ac_coeffs.iter().filter(|&&c| c != 0).count();
+        writer.write_u32(non_zero_count as u32, 20)?;
+
+        if non_zero_count == 0 {
+            return Ok(());
+        }
+
+        // Write positions of non-zero AC coefficients
+        for (pos, &coeff) in ac_coeffs.iter().enumerate() {
+            if coeff != 0 {
+                writer.write_u32(pos as u32, 20)?;
+            }
+        }
+
+        // Collect non-zero AC symbols with their contexts
+        let mut ac_data: Vec<(u32, &AnsDistribution)> = Vec::with_capacity(non_zero_count);
+
+        for (pos, &coeff) in ac_coeffs.iter().enumerate() {
+            if coeff != 0 {
+                let symbol = self.coeff_to_symbol(coeff);
+
+                // Map position to original coefficient index
+                let block_idx = pos / ac_coeffs.len().max(1);
+                let coeff_idx_in_pass = pos % ac_coeffs.len().max(1);
+                let coeff_idx_in_block = start_coeff + coeff_idx_in_pass + 1;
+
+                let block_x = block_idx % blocks_x;
+                let block_y = block_idx / blocks_x;
+
+                let context = Context::ac_context(coeff_idx_in_block, block_x, block_y, 0);
+                let dist = context_model.get_distribution(&context);
+
+                ac_data.push((symbol, dist));
+            }
+        }
+
+        // Encode AC with ANS in reverse order
+        let mut encoder = RansEncoder::new();
+        for (symbol, dist) in ac_data.iter().rev() {
+            encoder.encode_symbol(*symbol as usize, dist)?;
+        }
+
+        let ans_data = encoder.finalize();
+        writer.write_u32(ans_data.len() as u32, 20)?;
+        for &byte in &ans_data {
+            writer.write_bits(byte as u64, 8)?;
         }
 
         Ok(())

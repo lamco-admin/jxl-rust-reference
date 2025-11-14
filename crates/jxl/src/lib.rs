@@ -56,7 +56,7 @@ pub use jxl_core::{
 };
 
 // Re-export decoder
-pub use jxl_decoder::JxlDecoder;
+pub use jxl_decoder::{JxlDecoder, ProgressiveDecoder, ProgressivePass};
 
 // Re-export encoder
 pub use jxl_encoder::{EncoderOptions, JxlEncoder};
