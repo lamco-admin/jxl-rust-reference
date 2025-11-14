@@ -8,7 +8,7 @@ use jxl_core::*;
 use jxl_headers::{Container, JxlHeader, JxlImageMetadata, CODESTREAM_SIGNATURE};
 use jxl_transform::{
     dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, merge_dc_ac,
-    BLOCK_SIZE, AdaptiveQuantMap, adaptive_dequantize,
+    BLOCK_SIZE, AdaptiveQuantMap, adaptive_dequantize, ModularImage, Predictor, inverse_rct,
 };
 use rayon::prelude::*;
 use std::fs::File;
@@ -143,7 +143,14 @@ impl JxlDecoder {
             ));
         }
 
-        // Step 1: Read quality parameter from bitstream
+        // Check for lossless mode first
+        let lossless_flag = reader.read_bits(1)?;
+        if lossless_flag == 1 {
+            // Lossless mode - decode with modular mode
+            return self.decode_frame_lossless(reader, image, width, height, num_channels);
+        }
+
+        // Step 1: Read quality parameter from bitstream (lossy mode)
         let quality_encoded = reader.read_bits(16)? as u16;
         let quality = (quality_encoded as f32) / 100.0;
 
@@ -263,6 +270,160 @@ impl JxlDecoder {
         self.convert_to_target_format(&linear_rgba, image, width, height, num_channels)?;
 
         Ok(())
+    }
+
+    /// Decode frame in lossless modular mode
+    fn decode_frame_lossless<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+        image: &mut Image,
+        width: usize,
+        height: usize,
+        num_channels: usize,
+    ) -> JxlResult<()> {
+        // Lossless decoding pipeline (reverses encoder):
+        // 1. Read modular mode marker
+        // 2. For each channel: Decode ANS-compressed residuals
+        // 3. For each channel: Apply inverse predictor to reconstruct
+        // 4. Apply inverse RCT (YCoCg to RGB)
+        // 5. Convert to target pixel format
+        // 6. Decode alpha channel if present
+
+        // Read modular mode marker (1 bit)
+        let modular_flag = reader.read_bits(1)?;
+        if modular_flag != 1 {
+            return Err(JxlError::InvalidBitstream(
+                "Expected modular mode in lossless decoding".to_string(),
+            ));
+        }
+
+        // Create modular image for reconstruction
+        let mut modular_img = ModularImage::new(width, height, num_channels.min(3), 8);
+
+        // Decode each channel (in YCoCg space)
+        for ch in 0..num_channels.min(3) {
+            // Decode residuals with ANS
+            let residuals = self.decode_residuals_ans(reader)?;
+
+            if residuals.len() != width * height {
+                return Err(JxlError::InvalidBitstream(format!(
+                    "Residuals size mismatch: got {}, expected {}",
+                    residuals.len(),
+                    width * height
+                )));
+            }
+
+            // Apply inverse predictor to reconstruct channel
+            modular_img.inverse_predictor(ch, Predictor::Gradient, &residuals)?;
+        }
+
+        // Apply inverse RCT to convert YCoCg back to RGB
+        let mut rgb_channels = vec![Vec::new(); 3];
+        inverse_rct(
+            &modular_img.data[0], // Y
+            &modular_img.data[1], // Co
+            &modular_img.data[2], // Cg
+            &mut rgb_channels,
+        );
+
+        // Convert to target pixel format
+        match &mut image.buffer {
+            ImageBuffer::U8(buffer) => {
+                for ch in 0..3 {
+                    for i in 0..width * height {
+                        let val = rgb_channels[ch][i].clamp(0, 255) as u8;
+                        buffer[i * num_channels + ch] = val;
+                    }
+                }
+            }
+            ImageBuffer::U16(buffer) => {
+                for ch in 0..3 {
+                    for i in 0..width * height {
+                        let val = (rgb_channels[ch][i].clamp(0, 255) * 256) as u16;
+                        buffer[i * num_channels + ch] = val;
+                    }
+                }
+            }
+            ImageBuffer::F32(buffer) => {
+                for ch in 0..3 {
+                    for i in 0..width * height {
+                        let val = (rgb_channels[ch][i].clamp(0, 255) as f32) / 255.0;
+                        buffer[i * num_channels + ch] = val;
+                    }
+                }
+            }
+        }
+
+        // Decode alpha channel if present
+        if num_channels == 4 {
+            match &mut image.buffer {
+                ImageBuffer::U8(buffer) => {
+                    for i in 0..width * height {
+                        buffer[i * 4 + 3] = reader.read_bits(8)? as u8;
+                    }
+                }
+                ImageBuffer::U16(buffer) => {
+                    for i in 0..width * height {
+                        buffer[i * 4 + 3] = (reader.read_bits(8)? as u16) * 256;
+                    }
+                }
+                ImageBuffer::F32(buffer) => {
+                    for i in 0..width * height {
+                        buffer[i * 4 + 3] = (reader.read_bits(8)? as f32) / 255.0;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Decode ANS-compressed residuals
+    fn decode_residuals_ans<R: Read>(
+        &self,
+        reader: &mut BitReader<R>,
+    ) -> JxlResult<Vec<i32>> {
+        // Read distribution
+        let distribution = self.read_distribution(reader)?;
+
+        // Read number of symbols
+        let num_symbols = reader.read_u32(32)? as usize;
+
+        // Read ANS data length
+        let ans_data_len = reader.read_u32(32)? as usize;
+
+        // Read ANS data
+        let mut ans_data = Vec::with_capacity(ans_data_len);
+        for _ in 0..ans_data_len {
+            ans_data.push(reader.read_bits(8)? as u8);
+        }
+
+        // Decode symbols with ANS
+        let mut decoder = RansDecoder::new(ans_data)?;
+        let mut symbols = Vec::with_capacity(num_symbols);
+
+        for _ in 0..num_symbols {
+            let symbol = decoder.decode_symbol(&distribution)? as u32;
+            symbols.push(symbol);
+        }
+
+        // Note: rANS decodes in LIFO order, which reverses the encoding order.
+        // Since the encoder already reverses symbols before encoding,
+        // the decoded order is already correct - no need to reverse again!
+
+        // Convert symbols back to residuals (inverse zigzag encoding)
+        let residuals: Vec<i32> = symbols
+            .iter()
+            .map(|&symbol| {
+                if symbol % 2 == 0 {
+                    (symbol / 2) as i32
+                } else {
+                    -((symbol / 2 + 1) as i32)
+                }
+            })
+            .collect();
+
+        Ok(residuals)
     }
 
     /// Decode quantized DCT coefficients with context-aware ANS entropy decoding
