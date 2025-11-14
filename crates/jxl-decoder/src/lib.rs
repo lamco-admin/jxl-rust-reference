@@ -8,7 +8,7 @@ use jxl_core::*;
 use jxl_headers::{Container, JxlHeader, JxlImageMetadata, CODESTREAM_SIGNATURE};
 use jxl_transform::{
     dequantize, generate_xyb_quant_tables, idct_channel, inv_zigzag_scan_channel, merge_dc_ac,
-    BLOCK_SIZE,
+    BLOCK_SIZE, AdaptiveQuantMap, adaptive_dequantize,
 };
 use rayon::prelude::*;
 use std::fs::File;
@@ -143,25 +143,76 @@ impl JxlDecoder {
             ));
         }
 
-        // Step 1: Decode quantized coefficients
+        // Step 1: Read adaptive quantization map
+        let aq_map_size = reader.read_u32(20)? as usize;
+        let mut aq_serialized = Vec::with_capacity(aq_map_size);
+        for _ in 0..aq_map_size {
+            aq_serialized.push(reader.read_bits(8)? as u8);
+        }
+        let aq_map = AdaptiveQuantMap::deserialize(&aq_serialized, width, height, consts::DEFAULT_QUALITY)?;
+
+        // Step 2: Decode quantized coefficients
         let quantized = self.decode_coefficients(reader, width, height)?;
 
-        // Step 2: Dequantize with XYB-tuned tables (parallel)
-        // Use per-channel dequantization matching encoder
+        // Step 3: Adaptive dequantization using AQ map from bitstream (parallel)
         let xyb_tables = generate_xyb_quant_tables(consts::DEFAULT_QUALITY);
         let quant_tables = [&xyb_tables.x_table, &xyb_tables.y_table, &xyb_tables.b_table];
+        let blocks_x = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let blocks_y = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
         let dct_coeffs: Vec<Vec<f32>> = quantized
             .par_iter()
             .zip(quant_tables.par_iter())
             .map(|(quantized_channel, quant_table)| {
+                // Convert quantized data to blocks
+                let mut quant_blocks = Vec::with_capacity(blocks_x * blocks_y);
+                for by in 0..blocks_y {
+                    for bx in 0..blocks_x {
+                        let mut block = [0i16; 64];
+                        for y in 0..BLOCK_SIZE {
+                            for x in 0..BLOCK_SIZE {
+                                let px = bx * BLOCK_SIZE + x;
+                                let py = by * BLOCK_SIZE + y;
+                                if px < width && py < height {
+                                    block[y * BLOCK_SIZE + x] = quantized_channel[py * width + px];
+                                }
+                            }
+                        }
+                        quant_blocks.push(block);
+                    }
+                }
+
+                // Flatten blocks for adaptive_dequantize
+                let flat_quantized: Vec<i16> = quant_blocks.iter().flat_map(|b| b.iter().copied()).collect();
+
+                // Apply adaptive dequantization
+                let quant_table_u32: [u32; 64] = quant_table.map(|x| x as u32);
+                let dequant_blocks = adaptive_dequantize(&flat_quantized, &quant_table_u32, &aq_map);
+
+                // Convert blocks back to spatial layout
                 let mut dct_coeff = vec![0.0; width * height];
-                self.dequantize_channel(quantized_channel, quant_table, width, height, &mut dct_coeff);
+                let mut block_idx = 0;
+                for by in 0..blocks_y {
+                    for bx in 0..blocks_x {
+                        let block = &dequant_blocks[block_idx];
+                        for y in 0..BLOCK_SIZE {
+                            for x in 0..BLOCK_SIZE {
+                                let px = bx * BLOCK_SIZE + x;
+                                let py = by * BLOCK_SIZE + y;
+                                if px < width && py < height {
+                                    dct_coeff[py * width + px] = block[y * BLOCK_SIZE + x];
+                                }
+                            }
+                        }
+                        block_idx += 1;
+                    }
+                }
+
                 dct_coeff
             })
             .collect();
 
-        // Step 3: Apply inverse DCT (parallel)
+        // Step 4: Apply inverse DCT (parallel)
         // CRITICAL: Unscale after IDCT to convert back to 0-1 range
         // Encoder scales XYB by 255 before DCT, so we must divide by 255 after IDCT
         const XYB_SCALE: f32 = 255.0;
@@ -179,11 +230,11 @@ impl JxlDecoder {
             })
             .collect();
 
-        // Step 4: Convert XYB to RGB
+        // Step 5: Convert XYB to RGB
         let mut linear_rgb = vec![0.0; width * height * 3];
         self.xyb_to_rgb_image(&xyb, &mut linear_rgb, width, height);
 
-        // Step 5: Decode alpha channel if present
+        // Step 6: Decode alpha channel if present
         let linear_rgba = if num_channels == 4 {
             let mut rgba = vec![0.0; width * height * 4];
             for i in 0..(width * height) {
@@ -197,7 +248,7 @@ impl JxlDecoder {
             linear_rgb
         };
 
-        // Step 6: Convert to target pixel format
+        // Step 7: Convert to target pixel format
         self.convert_to_target_format(&linear_rgba, image, width, height, num_channels)?;
 
         Ok(())

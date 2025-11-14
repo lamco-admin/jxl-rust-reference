@@ -6,6 +6,7 @@ use jxl_core::*;
 use jxl_headers::{Container, JxlImageMetadata, CODESTREAM_SIGNATURE};
 use jxl_transform::{
     dct_channel, generate_xyb_quant_tables, quantize_channel, separate_dc_ac, zigzag_scan_channel,
+    AdaptiveQuantMap, adaptive_quantize, BlockComplexity, BLOCK_SIZE,
 };
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -149,46 +150,108 @@ impl JxlEncoder {
         let mut xyb = vec![0.0; width * height * 3];
         self.rgb_to_xyb_image(&linear_rgb, &mut xyb, width, height);
 
-        // Step 3: Apply DCT transformation to each channel (parallel)
+        // Step 3: Extract and scale XYB channels
         // CRITICAL: Scale XYB values to pixel range (0-255) before DCT
         // XYB values are in ~0-1 range from linear RGB, but DCT expects larger values
         // for proper quantization. Without scaling, all AC coefficients quantize to zero!
         const XYB_SCALE: f32 = 255.0;
 
-        // Process X, Y, and B-Y channels independently for maximum throughput
-        let dct_coeffs: Vec<Vec<f32>> = (0..3)
+        // Extract and scale each channel
+        let scaled_channels: Vec<Vec<f32>> = (0..3)
             .into_par_iter()
             .map(|c| {
                 let mut channel = self.extract_channel(&xyb, width, height, c, 3);
-                // Scale to pixel range before DCT
+                // Scale to pixel range
                 for val in &mut channel {
                     *val *= XYB_SCALE;
                 }
+                channel
+            })
+            .collect();
+
+        // Step 3a: Build adaptive quantization map from Y channel (luminance)
+        // Y channel is most perceptually important, so we analyze it for block complexity
+        let y_blocks = self.extract_blocks(&scaled_channels[1], width, height);
+        let aq_map = AdaptiveQuantMap::new(width, height, &y_blocks, self.options.quality)?;
+
+        // Step 3b: Apply DCT transformation to each channel (parallel)
+        let dct_coeffs: Vec<Vec<f32>> = scaled_channels
+            .par_iter()
+            .map(|channel| {
                 let mut dct_coeff = vec![0.0; width * height];
-                dct_channel(&channel, width, height, &mut dct_coeff);
+                dct_channel(channel, width, height, &mut dct_coeff);
                 dct_coeff
             })
             .collect();
 
-        // Step 4: Quantize coefficients with XYB-tuned tables (parallel)
-        // Use per-channel quantization for optimal perceptual quality
+        // Step 4: Adaptive quantization with XYB-tuned tables (parallel)
+        // Use per-channel quantization + adaptive scaling for optimal perceptual quality
         let xyb_tables = generate_xyb_quant_tables(self.options.quality);
         let quant_tables = [&xyb_tables.x_table, &xyb_tables.y_table, &xyb_tables.b_table];
+
+        // Convert DCT coefficients to 8x8 blocks for adaptive quantization
+        let blocks_x = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let blocks_y = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
         let quantized: Vec<Vec<i16>> = dct_coeffs
             .par_iter()
             .zip(quant_tables.par_iter())
             .map(|(dct_coeff, quant_table)| {
-                let mut quantized_channel = Vec::new();
-                quantize_channel(dct_coeff, width, height, quant_table, &mut quantized_channel);
-                quantized_channel
+                // Extract DCT blocks
+                let mut dct_blocks = Vec::with_capacity(blocks_x * blocks_y);
+                for by in 0..blocks_y {
+                    for bx in 0..blocks_x {
+                        let mut block = [0.0f32; 64];
+                        for y in 0..BLOCK_SIZE {
+                            for x in 0..BLOCK_SIZE {
+                                let px = bx * BLOCK_SIZE + x;
+                                let py = by * BLOCK_SIZE + y;
+                                if px < width && py < height {
+                                    block[y * BLOCK_SIZE + x] = dct_coeff[py * width + px];
+                                }
+                            }
+                        }
+                        dct_blocks.push(block);
+                    }
+                }
+
+                // Apply adaptive quantization (returns flat array in block order)
+                let quant_table_u32: [u32; 64] = quant_table.map(|x| x as u32);
+                let quantized_flat = adaptive_quantize(&dct_blocks, &quant_table_u32, &aq_map);
+
+                // Convert from block order to spatial order
+                let mut quantized_spatial = vec![0i16; width * height];
+                let mut idx = 0;
+                for by in 0..blocks_y {
+                    for bx in 0..blocks_x {
+                        for y in 0..BLOCK_SIZE {
+                            for x in 0..BLOCK_SIZE {
+                                let px = bx * BLOCK_SIZE + x;
+                                let py = by * BLOCK_SIZE + y;
+                                if px < width && py < height {
+                                    quantized_spatial[py * width + px] = quantized_flat[idx];
+                                }
+                                idx += 1;
+                            }
+                        }
+                    }
+                }
+
+                quantized_spatial
             })
             .collect();
 
-        // Step 5: Encode quantized coefficients using simplified ANS
+        // Step 5: Serialize and write adaptive quantization map
+        let aq_serialized = aq_map.serialize();
+        writer.write_u32(aq_serialized.len() as u32, 20)?;
+        for &byte in &aq_serialized {
+            writer.write_bits(byte as u64, 8)?;
+        }
+
+        // Step 6: Encode quantized coefficients using simplified ANS
         self.encode_coefficients(&quantized, width, height, writer)?;
 
-        // Step 6: If there's an alpha channel, encode it separately
+        // Step 7: If there's an alpha channel, encode it separately
         if num_channels == 4 {
             self.encode_alpha_channel(&linear_rgb, width, height, writer)?;
         }
@@ -266,6 +329,36 @@ impl JxlEncoder {
         }
 
         channel_data
+    }
+
+    /// Extract 8x8 blocks from a channel for adaptive quantization analysis
+    fn extract_blocks(&self, channel: &[f32], width: usize, height: usize) -> Vec<[f32; 64]> {
+        let blocks_x = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let blocks_y = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let mut blocks = Vec::with_capacity(blocks_x * blocks_y);
+
+        for block_y in 0..blocks_y {
+            for block_x in 0..blocks_x {
+                let mut block = [0.0f32; 64];
+
+                // Extract 8x8 block (with padding if at edge)
+                for y in 0..BLOCK_SIZE {
+                    for x in 0..BLOCK_SIZE {
+                        let px = block_x * BLOCK_SIZE + x;
+                        let py = block_y * BLOCK_SIZE + y;
+
+                        if px < width && py < height {
+                            block[y * BLOCK_SIZE + x] = channel[py * width + px];
+                        }
+                        // else: padding remains zero
+                    }
+                }
+
+                blocks.push(block);
+            }
+        }
+
+        blocks
     }
 
     /// Encode quantized DCT coefficients with ANS entropy coding
