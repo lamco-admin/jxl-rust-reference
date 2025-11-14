@@ -143,19 +143,23 @@ impl JxlDecoder {
             ));
         }
 
-        // Step 1: Read adaptive quantization map
+        // Step 1: Read quality parameter from bitstream
+        let quality_encoded = reader.read_bits(16)? as u16;
+        let quality = (quality_encoded as f32) / 100.0;
+
+        // Step 2: Read adaptive quantization map
         let aq_map_size = reader.read_u32(20)? as usize;
         let mut aq_serialized = Vec::with_capacity(aq_map_size);
         for _ in 0..aq_map_size {
             aq_serialized.push(reader.read_bits(8)? as u8);
         }
-        let aq_map = AdaptiveQuantMap::deserialize(&aq_serialized, width, height, consts::DEFAULT_QUALITY)?;
+        let aq_map = AdaptiveQuantMap::deserialize(&aq_serialized, width, height, quality)?;
 
-        // Step 2: Decode quantized coefficients
+        // Step 3: Decode quantized coefficients
         let quantized = self.decode_coefficients(reader, width, height)?;
 
-        // Step 3: Adaptive dequantization using AQ map from bitstream (parallel)
-        let xyb_tables = generate_xyb_quant_tables(consts::DEFAULT_QUALITY);
+        // Step 4: Adaptive dequantization using AQ map from bitstream (parallel)
+        let xyb_tables = generate_xyb_quant_tables(quality);
         let quant_tables = [&xyb_tables.x_table, &xyb_tables.y_table, &xyb_tables.b_table];
         let blocks_x = (width + BLOCK_SIZE - 1) / BLOCK_SIZE;
         let blocks_y = (height + BLOCK_SIZE - 1) / BLOCK_SIZE;
@@ -212,7 +216,7 @@ impl JxlDecoder {
             })
             .collect();
 
-        // Step 4: Apply inverse DCT (parallel)
+        // Step 5: Apply inverse DCT (parallel)
         // CRITICAL: Unscale after IDCT to convert back to 0-1 range
         // Encoder scales XYB by 255 before DCT, so we must divide by 255 after IDCT
         const XYB_SCALE: f32 = 255.0;
@@ -230,11 +234,11 @@ impl JxlDecoder {
             })
             .collect();
 
-        // Step 5: Convert XYB to RGB
+        // Step 6: Convert XYB to RGB
         let mut linear_rgb = vec![0.0; width * height * 3];
         self.xyb_to_rgb_image(&xyb, &mut linear_rgb, width, height);
 
-        // Step 6: Decode alpha channel if present
+        // Step 7: Decode alpha channel if present
         let linear_rgba = if num_channels == 4 {
             let mut rgba = vec![0.0; width * height * 4];
             for i in 0..(width * height) {
@@ -248,7 +252,7 @@ impl JxlDecoder {
             linear_rgb
         };
 
-        // Step 7: Convert to target pixel format
+        // Step 8: Convert to target pixel format
         self.convert_to_target_format(&linear_rgba, image, width, height, num_channels)?;
 
         Ok(())

@@ -241,17 +241,22 @@ impl JxlEncoder {
             })
             .collect();
 
-        // Step 5: Serialize and write adaptive quantization map
+        // Step 5: Write quality parameter (needed for decoder to use matching quantization tables)
+        // Quality is encoded as u16 (0-10000) to support fractional values like 95.5
+        let quality_encoded = (self.options.quality * 100.0).round() as u16;
+        writer.write_bits(quality_encoded as u64, 16)?;
+
+        // Step 6: Serialize and write adaptive quantization map
         let aq_serialized = aq_map.serialize();
         writer.write_u32(aq_serialized.len() as u32, 20)?;
         for &byte in &aq_serialized {
             writer.write_bits(byte as u64, 8)?;
         }
 
-        // Step 6: Encode quantized coefficients using simplified ANS
+        // Step 7: Encode quantized coefficients using simplified ANS
         self.encode_coefficients(&quantized, width, height, writer)?;
 
-        // Step 7: If there's an alpha channel, encode it separately
+        // Step 8: If there's an alpha channel, encode it separately
         if num_channels == 4 {
             self.encode_alpha_channel(&linear_rgb, width, height, writer)?;
         }
