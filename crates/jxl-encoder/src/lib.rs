@@ -66,22 +66,44 @@ pub struct JxlEncoder {
     /// A complete implementation would use these for quality/effort trade-offs.
     #[allow(dead_code)]
     options: EncoderOptions,
+
+    /// Buffer pool for memory reuse (lazily initialized per image dimension)
+    buffer_pool: Option<BufferPool>,
 }
 
 impl JxlEncoder {
     pub fn new(options: EncoderOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            buffer_pool: None,
+        }
+    }
+
+    /// Ensure buffer pool exists for given dimensions
+    fn ensure_buffer_pool(&mut self, width: usize, height: usize) {
+        // Check if we need to create/recreate pool for different dimensions
+        let needs_new = match &self.buffer_pool {
+            Some(pool) => {
+                let (pool_w, pool_h) = pool.dimensions();
+                pool_w != width || pool_h != height
+            }
+            None => true,
+        };
+
+        if needs_new {
+            self.buffer_pool = Some(BufferPool::new(width, height));
+        }
     }
 
     /// Encode an image to a file
-    pub fn encode_file<P: AsRef<Path>>(&self, image: &Image, path: P) -> JxlResult<()> {
+    pub fn encode_file<P: AsRef<Path>>(&mut self, image: &Image, path: P) -> JxlResult<()> {
         let file = File::create(path)?;
         let writer = BufWriter::new(file);
         self.encode(image, writer)
     }
 
     /// Encode an image to a writer with JPEG XL container format
-    pub fn encode<W: Write>(&self, image: &Image, mut writer: W) -> JxlResult<()> {
+    pub fn encode<W: Write>(&mut self, image: &Image, mut writer: W) -> JxlResult<()> {
         // Step 1: Encode codestream to buffer
         let mut codestream = Vec::new();
         {
@@ -123,7 +145,7 @@ impl JxlEncoder {
         Ok(())
     }
 
-    fn encode_frame<W: Write>(&self, image: &Image, writer: &mut BitWriter<W>) -> JxlResult<()> {
+    fn encode_frame<W: Write>(&mut self, image: &Image, writer: &mut BitWriter<W>) -> JxlResult<()> {
         // Full encoding pipeline:
         // 1. Convert input to f32
         // 2. Convert sRGB to linear RGB
@@ -146,8 +168,9 @@ impl JxlEncoder {
         // Step 1: Convert to f32 and normalize to [0, 1]
         let linear_rgb = self.convert_to_linear_f32(image)?;
 
-        // Step 2: Convert RGB to XYB color space
-        let mut xyb = vec![0.0; width * height * 3];
+        // Step 2: Convert RGB to XYB color space (use buffer pool)
+        self.ensure_buffer_pool(width, height);
+        let mut xyb = self.buffer_pool.as_ref().unwrap().get_xyb_buffer();
         self.rgb_to_xyb_image(&linear_rgb, &mut xyb, width, height);
 
         // Step 3: Extract and scale XYB channels

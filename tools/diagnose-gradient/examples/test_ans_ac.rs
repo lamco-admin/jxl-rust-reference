@@ -73,7 +73,7 @@ fn main() {
     println!("  AC non-zero count: {}", ac.iter().filter(|&&x| x != 0).count());
 
     // Now do full encode/decode
-    let encoder = jxl_encoder::JxlEncoder::new(jxl_encoder::EncoderOptions::default().quality(85.0));
+    let mut encoder = jxl_encoder::JxlEncoder::new(jxl_encoder::EncoderOptions::default().quality(85.0));
     let mut encoded = Vec::new();
     encoder.encode(&original, Cursor::new(&mut encoded)).unwrap();
 

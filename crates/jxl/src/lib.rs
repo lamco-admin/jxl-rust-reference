@@ -31,7 +31,7 @@
 //!     .quality(90.0)
 //!     .effort(7);
 //!
-//! let encoder = JxlEncoder::new(options);
+//! let mut encoder = JxlEncoder::new(options);
 //! encoder.encode_file(&image, "output.jxl").unwrap();
 //! ```
 //!
